@@ -1,5 +1,7 @@
-// Script de sincronização automática com o DataJud (CNJ).
+// Script de sincronização automática do escritório.
 // Roda de forma independente (sem navegador) via GitHub Actions.
+// 1) Busca movimentações processuais no DataJud (CNJ) para os processos judiciais.
+// 2) Busca publicações no DJEN (Diário de Justiça Eletrônico Nacional) pela OAB cadastrada.
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -47,12 +49,32 @@ async function buscarAndamentosDataJud(numeroProcesso) {
     .sort((a, b) => a.data.localeCompare(b.data));
 }
 
+async function buscarIntimacoesDJEN(oabNumero, oabUf, dias = 15) {
+  if (!oabNumero || !oabUf) return [];
+  const hoje = new Date();
+  const inicio = new Date(hoje.getTime() - dias * 86400000);
+  const fmt = d => d.toISOString().slice(0, 10);
+  const url = `https://comunicaapi.pje.jus.br/api/v1/comunicacao?numeroOab=${encodeURIComponent(oabNumero)}&ufOab=${encodeURIComponent(oabUf)}&dataDisponibilizacaoInicio=${fmt(inicio)}&dataDisponibilizacaoFim=${fmt(hoje)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) return [];
+  const data = await resp.json();
+  const itens = data?.items || data?.content || [];
+  return itens.map(it => ({
+    id: it.id || `djen-${it.numero_processo || ""}-${it.data_disponibilizacao || ""}-${Math.random().toString(36).slice(2, 8)}`,
+    data: (it.data_disponibilizacao || it.dataDisponibilizacao || "").slice(0, 10),
+    orgao: it.orgao?.nome || it.nomeOrgao || "—",
+    numeroProcesso: it.numero_processo || it.numeroProcesso || "",
+    texto: it.texto || it.conteudo || "",
+    vinculada: false
+  }));
+}
+
 async function sbGet(chave) {
   const url = `${SUPABASE_URL}/rest/v1/dados_sistema?user_id=eq.${USER_ID}&chave=eq.${chave}&select=valor`;
   const resp = await fetch(url, {
     headers: { apikey: SERVICE_ROLE_KEY, Authorization: `Bearer ${SERVICE_ROLE_KEY}` }
   });
-  if (!resp.ok) throw new Error(`Falha ao ler do Supabase: ${resp.status} ${await resp.text()}`);
+  if (!resp.ok) throw new Error(`Falha ao ler do Supabase (${chave}): ${resp.status} ${await resp.text()}`);
   const rows = await resp.json();
   return rows[0]?.valor ?? null;
 }
@@ -69,17 +91,12 @@ async function sbUpsert(chave, valor) {
     },
     body: JSON.stringify({ user_id: USER_ID, chave, valor, atualizado_em: new Date().toISOString() })
   });
-  if (!resp.ok) throw new Error(`Falha ao salvar no Supabase: ${resp.status} ${await resp.text()}`);
+  if (!resp.ok) throw new Error(`Falha ao salvar no Supabase (${chave}): ${resp.status} ${await resp.text()}`);
 }
 
-async function main() {
-  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !USER_ID || !DATAJUD_API_KEY) {
-    console.error("Faltam variáveis de ambiente obrigatórias (verifique os Secrets no GitHub).");
-    process.exit(1);
-  }
-
+async function sincronizarProcessos() {
   const processos = (await sbGet("processos")) || [];
-  console.log(`Encontrados ${processos.length} processo(s) cadastrados.`);
+  console.log(`[DataJud] Encontrados ${processos.length} processo(s) cadastrados.`);
   let totalNovos = 0;
 
   for (const p of processos) {
@@ -91,19 +108,56 @@ async function main() {
       if (novos.length > 0) {
         p.andamentos = [...(p.andamentos || []), ...novos];
         totalNovos += novos.length;
-        console.log(`Processo ${p.numero}: ${novos.length} andamento(s) novo(s)`);
+        console.log(`[DataJud] Processo ${p.numero}: ${novos.length} andamento(s) novo(s)`);
       }
     } catch (e) {
-      console.error(`Erro ao consultar processo ${p.numero}:`, e.message);
+      console.error(`[DataJud] Erro ao consultar processo ${p.numero}:`, e.message);
     }
   }
 
   if (totalNovos > 0) {
     await sbUpsert("processos", processos);
-    console.log(`Sincronização concluída: ${totalNovos} andamento(s) novo(s) no total.`);
+    console.log(`[DataJud] Sincronização concluída: ${totalNovos} andamento(s) novo(s) no total.`);
   } else {
-    console.log("Sincronização concluída: nenhuma novidade.");
+    console.log("[DataJud] Sincronização concluída: nenhuma novidade.");
   }
+}
+
+async function sincronizarIntimacoes() {
+  const config = (await sbGet("config")) || {};
+  const { oabNumero, oabUf } = config;
+  if (!oabNumero || !oabUf) {
+    console.log("[DJEN] OAB não configurada em Configurações — pulando busca de publicações.");
+    return;
+  }
+
+  const intimacoesAtuais = (await sbGet("intimacoes")) || [];
+  const encontradas = await buscarIntimacoesDJEN(oabNumero, oabUf, 15);
+  const idsExistentes = new Set(intimacoesAtuais.map(i => i.id));
+  const novas = encontradas.filter(i => !idsExistentes.has(i.id));
+
+  if (novas.length > 0) {
+    const atualizadas = [...novas, ...intimacoesAtuais];
+    await sbUpsert("intimacoes", atualizadas);
+    console.log(`[DJEN] ${novas.length} publicação(ões) nova(s) encontrada(s) para OAB ${oabNumero}/${oabUf}.`);
+  } else {
+    console.log(`[DJEN] Nenhuma publicação nova para OAB ${oabNumero}/${oabUf}.`);
+  }
+}
+
+async function main() {
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !USER_ID) {
+    console.error("Faltam variáveis de ambiente obrigatórias (verifique os Secrets no GitHub).");
+    process.exit(1);
+  }
+
+  if (DATAJUD_API_KEY) {
+    await sincronizarProcessos();
+  } else {
+    console.log("[DataJud] Chave não configurada — pulando sincronização de andamentos.");
+  }
+
+  await sincronizarIntimacoes();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
