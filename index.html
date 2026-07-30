@@ -143,6 +143,27 @@ const diasEntre = (isoAlvo) => {
   const alvo = new Date(isoAlvo+"T00:00:00");
   return Math.round((alvo-hoje)/86400000);
 };
+// Conta apenas dias úteis (segunda a sexta) entre hoje e a data-alvo.
+// Não desconta feriados nacionais/estaduais — apenas fins de semana.
+const diasUteisEntre = (isoAlvo) => {
+  if(!isoAlvo) return null;
+  const hoje = new Date(fmtDataHoje()+"T00:00:00");
+  const alvo = new Date(isoAlvo+"T00:00:00");
+  if(alvo.getTime()===hoje.getTime()) return 0;
+  const passado = alvo < hoje;
+  const inicio = passado ? alvo : hoje;
+  const fim = passado ? hoje : alvo;
+  let contador = 0;
+  const cursor = new Date(inicio);
+  while(cursor < fim){
+    cursor.setDate(cursor.getDate()+1);
+    const diaSemana = cursor.getDay();
+    if(diaSemana!==0 && diaSemana!==6) contador++;
+  }
+  return passado ? -contador : contador;
+};
+// Escolhe dias úteis ou dias corridos conforme o tipo (labels.diasUteis)
+const calcularDiasPrazo = (isoAlvo, usarDiasUteis) => usarDiasUteis ? diasUteisEntre(isoAlvo) : diasEntre(isoAlvo);
 const corPrazo = (dias) => {
   if(dias===null) return "var(--text3)";
   if(dias<0) return "var(--red)";
@@ -513,14 +534,31 @@ function Badge({texto,cor}){
 }
 
 // ---------- Página: Dashboard ----------
-function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirProcesso}){
+function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,parcelas,onIrPara,onAbrirProcesso}){
+  // Resumo de prazos por categoria, cada uma com sua regra de contagem (dias úteis x dias corridos)
+  const resumoPrazos = (lista, usarDiasUteis) => {
+    const ativosComPrazo = lista.filter(p=>!p.arquivado && p.prazo);
+    const comDias = ativosComPrazo.map(p=>({...p, dias: calcularDiasPrazo(p.prazo, usarDiasUteis)}));
+    return {
+      total: comDias.length,
+      vencidos: comDias.filter(p=>p.dias<0).length,
+      proximos7: comDias.filter(p=>p.dias>=0 && p.dias<=7).length,
+      itens: comDias,
+    };
+  };
+
+  const resumoProcessos = useMemo(()=>resumoPrazos(processos, true), [processos]);
+  const resumoSindicancias = useMemo(()=>resumoPrazos(sindicancias, false), [sindicancias]);
+  const resumoPeps = useMemo(()=>resumoPrazos(peps, false), [peps]);
+
   const prazosProximos = useMemo(()=>{
-    return processos
-      .filter(p=>p.prazo && !p.arquivado)
-      .map(p=>({...p, dias:diasEntre(p.prazo)}))
-      .sort((a,b)=>a.dias-b.dias)
-      .slice(0,8);
-  },[processos]);
+    const todos = [
+      ...resumoProcessos.itens.map(p=>({...p, tipo:"Processo", pagina:"processos"})),
+      ...resumoSindicancias.itens.map(p=>({...p, tipo:"Sindicância", pagina:"sindicancias"})),
+      ...resumoPeps.itens.map(p=>({...p, tipo:"PEP", pagina:"peps"})),
+    ];
+    return todos.sort((a,b)=>a.dias-b.dias).slice(0,8);
+  },[resumoProcessos,resumoSindicancias,resumoPeps]);
 
   const tarefasAbertas = tarefas.filter(t=>t.status!=="concluida" && !t.arquivada);
   const processosAtivos = processos.filter(p=>!p.arquivado);
@@ -547,16 +585,52 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
     setCarregandoIA(false);
   };
 
+  const CaixaPrazo = ({titulo, resumo, cor, icon, pagina, regra}) => (
+    <div onClick={()=>onIrPara(pagina)} style={{
+      background:"var(--card)",borderRadius:12,padding:"18px 20px",boxShadow:"var(--shadow)",
+      border:"1px solid var(--border)",flex:1,minWidth:220,cursor:"pointer"
+    }}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <Icon name={icon} size={16} color={cor}/>
+          <span style={{fontSize:14.5,fontWeight:700,color:"var(--text)"}}>{titulo}</span>
+        </div>
+        <span style={{fontSize:10.5,color:"var(--text3)",textTransform:"uppercase",letterSpacing:.3}}>{regra}</span>
+      </div>
+      <div style={{display:"flex",gap:18}}>
+        <div>
+          <div style={{fontSize:26,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",color:"var(--text)"}}>{resumo.total}</div>
+          <div style={{fontSize:11,color:"var(--text3)"}}>com prazo</div>
+        </div>
+        <div>
+          <div style={{fontSize:26,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",color: resumo.vencidos>0?"var(--red)":"var(--text3)"}}>{resumo.vencidos}</div>
+          <div style={{fontSize:11,color:"var(--text3)"}}>vencido(s)</div>
+        </div>
+        <div>
+          <div style={{fontSize:26,fontWeight:700,fontFamily:"'Cormorant Garamond',serif",color: resumo.proximos7>0?"#B8863A":"var(--text3)"}}>{resumo.proximos7}</div>
+          <div style={{fontSize:11,color:"var(--text3)"}}>em 7 dias</div>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="fade-in">
       <h2 style={{fontSize:30,marginBottom:4}}>Painel</h2>
       <div style={{color:"var(--text2)",marginBottom:22,fontSize:14.5}}>Visão geral do escritório — {new Date().toLocaleDateString("pt-BR",{weekday:"long",day:"numeric",month:"long"})}</div>
 
-      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:26}}>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:18}}>
         <KpiCard label="Processos ativos" value={processosAtivos.length} icon="processos" onClick={()=>onIrPara("processos")}/>
         <KpiCard label="Clientes" value={clientes.length} icon="clientes"/>
         <KpiCard label="Tarefas em aberto" value={tarefasAbertas.length} icon="tarefas" cor={tarefasAbertas.length>0?"var(--gold-dark)":"var(--navy)"}/>
         <KpiCard label="A receber" value={fmtMoeda(totalReceber)} icon="financeiro" sub={`${parcelasEmAberto.length} parcela(s) em aberto`}/>
+      </div>
+
+      <div style={{fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,color:"var(--text2)",marginBottom:8,marginTop:8}}>Prazos por categoria</div>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:26}}>
+        <CaixaPrazo titulo="Processos" resumo={resumoProcessos} cor="var(--navy)" icon="processos" pagina="processos" regra="dias úteis"/>
+        <CaixaPrazo titulo="Sindicâncias" resumo={resumoSindicancias} cor="var(--gold-dark)" icon="escudo" pagina="sindicancias" regra="dias corridos"/>
+        <CaixaPrazo titulo="PEP" resumo={resumoPeps} cor="var(--gold-dark)" icon="balanca" pagina="peps" regra="dias corridos"/>
       </div>
 
       <div style={{background:"linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%)",borderRadius:12,padding:"20px 22px",marginBottom:22,boxShadow:"var(--shadow)"}}>
@@ -603,13 +677,15 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
         <div style={{background:"var(--card)",borderRadius:12,padding:"20px 22px",boxShadow:"var(--shadow)",border:"1px solid var(--border)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <h3 style={{fontSize:19}}>Prazos mais próximos</h3>
-            <span onClick={()=>onIrPara("processos")} style={{fontSize:12.5,color:"var(--navy)",cursor:"pointer",fontWeight:600}}>Ver todos →</span>
           </div>
           {prazosProximos.length===0 && <div style={{color:"var(--text3)",fontSize:14,padding:"18px 0"}}>Nenhum prazo cadastrado no momento.</div>}
           {prazosProximos.map(p=>(
-            <div key={p.id} onClick={()=>onAbrirProcesso(p.id)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid var(--border)",cursor:"pointer"}}>
+            <div key={`${p.tipo}-${p.id}`} onClick={()=>onIrPara(p.pagina)} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:"1px solid var(--border)",cursor:"pointer"}}>
               <div style={{minWidth:0}}>
-                <div style={{fontSize:14.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.numero || "Processo sem número"}</div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:10,fontWeight:700,color:"var(--text3)",textTransform:"uppercase"}}>{p.tipo}</span>
+                </div>
+                <div style={{fontSize:14.5,fontWeight:600,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.numero || `${p.tipo} sem número`}</div>
                 <div style={{fontSize:12.5,color:"var(--text3)"}}>{p.assunto || p.classificacao || "—"}</div>
               </div>
               <Badge texto={p.dias<0?`${Math.abs(p.dias)}d atrasado`:p.dias===0?"hoje":`${p.dias}d`} cor={corPrazo(p.dias)}/>
@@ -775,21 +851,21 @@ const LABELS_PROCESSO = {
   numero:"Número do processo", numeroPlaceholder:"0000000-00.0000.0.00.0000", semNumero:"Processo sem número",
   excluirTitulo:"Excluir processo", excluirTexto:"Tem certeza que deseja excluir este processo? Esta ação não pode ser desfeita.",
   buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhum processo encontrado.",
-  clienteLabel:"Cliente do escritório neste processo", mostrarDataJud:true,
+  clienteLabel:"Cliente do escritório neste processo", mostrarDataJud:true, diasUteis:true,
 };
 const LABELS_SINDICANCIA = {
   tituloPagina: "Sindicâncias", contagem:"sindicância(s)", novo:"Nova sindicância", editar:"Editar sindicância",
   numero:"Número da sindicância", numeroPlaceholder:"Ex: SIND-0001/2026", semNumero:"Sindicância sem número",
   excluirTitulo:"Excluir sindicância", excluirTexto:"Tem certeza que deseja excluir esta sindicância? Esta ação não pode ser desfeita.",
   buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhuma sindicância encontrada.",
-  clienteLabel:"Médico(a) representado(a) nesta sindicância", mostrarDataJud:false,
+  clienteLabel:"Médico(a) representado(a) nesta sindicância", mostrarDataJud:false, diasUteis:false,
 };
 const LABELS_PEP = {
   tituloPagina: "PEP", contagem:"PEP(s)", novo:"Novo PEP", editar:"Editar PEP",
   numero:"Número do PEP", numeroPlaceholder:"Ex: PEP-0001/2026", semNumero:"PEP sem número",
   excluirTitulo:"Excluir PEP", excluirTexto:"Tem certeza que deseja excluir este PEP? Esta ação não pode ser desfeita.",
   buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhum PEP encontrado.",
-  clienteLabel:"Médico(a) representado(a) neste PEP", mostrarDataJud:false,
+  clienteLabel:"Médico(a) representado(a) neste PEP", mostrarDataJud:false, diasUteis:false,
 };
 
 // ---------- Modal: Formulário de Processo ----------
@@ -892,7 +968,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
   const [confirmarExcluir,setConfirmarExcluir] = useState(false);
   const [buscandoDataJud,setBuscandoDataJud] = useState(false);
   const [erroDataJud,setErroDataJud] = useState("");
-  const dias = diasEntre(p.prazo);
+  const dias = calcularDiasPrazo(p.prazo, labels.diasUteis);
 
   const addAndamento = () => {
     if(!novoAnd.trim()) return;
@@ -1024,8 +1100,8 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
     const alvo = `${p.numero} ${p.assunto} ${p.autor} ${p.reu} ${cli?.nome||""}`.toLowerCase();
     return alvo.includes(busca.toLowerCase());
   }).sort((a,b)=>{
-    const da = a.prazo ? diasEntre(a.prazo) : 9999;
-    const db = b.prazo ? diasEntre(b.prazo) : 9999;
+    const da = a.prazo ? calcularDiasPrazo(a.prazo, labels.diasUteis) : 9999;
+    const db = b.prazo ? calcularDiasPrazo(b.prazo, labels.diasUteis) : 9999;
     return da-db;
   });
 
@@ -1063,7 +1139,7 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
         {filtrados.length===0 && <div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>{labels.vazio}</div>}
         {filtrados.map((p,i)=>{
           const cli = clientePorId(p.clienteId);
-          const dias = p.prazo ? diasEntre(p.prazo) : null;
+          const dias = p.prazo ? calcularDiasPrazo(p.prazo, labels.diasUteis) : null;
           return (
             <div key={p.id} onClick={()=>setDetalheId(p.id)} style={{
               display:"flex",alignItems:"center",gap:14,padding:"14px 20px",cursor:"pointer",
@@ -1934,12 +2010,43 @@ function AppPrincipal({usuario, onSair}){
     else alert("Não foi possível iniciar a conexão. Verifique o Google Client ID em Configurações.");
   };
 
+  const [statusSincDataJud, setStatusSincDataJud] = useState(null);
+
+  useEffect(()=>{
+    if(!carregado || !config.datajudApiKey) return;
+    (async () => {
+      const hoje = fmtDataHoje();
+      const ultimaSinc = await stGet("datajudUltimaSincronizacao", null);
+      if(ultimaSinc === hoje) return;
+
+      const processosParaChecar = processos.filter(p=>!p.arquivado && p.numero);
+      if(processosParaChecar.length===0){ await stSet("datajudUltimaSincronizacao", hoje); return; }
+
+      setStatusSincDataJud("sincronizando");
+      let totalNovos = 0;
+      for(const p of processosParaChecar){
+        try{
+          const encontrados = await buscarAndamentosDataJud(p.numero, config.datajudApiKey);
+          const jaExistem = new Set((p.andamentos||[]).map(a=>`${a.data}|${a.desc}`));
+          const novos = encontrados.filter(a=>!jaExistem.has(`${a.data}|${a.desc}`));
+          if(novos.length>0){
+            totalNovos += novos.length;
+            setProcessos(ps=>ps.map(x=>x.id===p.id?{...x,andamentos:[...(x.andamentos||[]),...novos]}:x));
+          }
+        }catch(e){ /* segue para o próximo processo mesmo se um falhar */ }
+      }
+      await stSet("datajudUltimaSincronizacao", hoje);
+      setStatusSincDataJud({novos: totalNovos});
+      setTimeout(()=>setStatusSincDataJud(null), 7000);
+    })();
+  },[carregado, config.datajudApiKey]);
+
   const irParaProcesso = (id) => { setPagina("processos"); setAbrirProcessoId(id); };
 
   const contadores = {
-    processos: processos.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
-    sindicancias: sindicancias.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
-    peps: peps.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
+    processos: processos.filter(p=>!p.arquivado && p.prazo && calcularDiasPrazo(p.prazo,true)<=3).length,
+    sindicancias: sindicancias.filter(p=>!p.arquivado && p.prazo && calcularDiasPrazo(p.prazo,false)<=3).length,
+    peps: peps.filter(p=>!p.arquivado && p.prazo && calcularDiasPrazo(p.prazo,false)<=3).length,
     tarefas: tarefas.filter(t=>t.status!=="concluida" && !t.arquivada).length,
     intimacoes: intimacoes.filter(i=>!i.vinculada).length,
   };
@@ -1952,7 +2059,7 @@ function AppPrincipal({usuario, onSair}){
     <div style={{display:"flex",minHeight:"100vh"}}>
       <Sidebar paginaAtual={pagina} onIrPara={(p)=>{setPagina(p);setAbrirProcessoId(null);}} usuario={usuario} onSair={onSair} contadores={contadores}/>
       <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
-        {pagina==="dashboard" && <PaginaDashboard processos={processos} clientes={clientes} tarefas={tarefas} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
+        {pagina==="dashboard" && <PaginaDashboard processos={processos} sindicancias={sindicancias} peps={peps} clientes={clientes} tarefas={tarefas} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey}/>}
         {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
         {pagina==="peps" && <PaginaProcessos processos={peps} setProcessos={setPeps} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_PEP}/>}
@@ -1964,6 +2071,20 @@ function AppPrincipal({usuario, onSair}){
         {pagina==="pecas" && <PaginaPecas processos={processos} clientes={clientes}/>}
         {pagina==="config" && <PaginaConfig usuario={usuario} config={config} setConfig={setConfig} googleToken={googleToken} onConectarGoogle={conectarGoogle}/>}
       </div>
+      {statusSincDataJud && (
+        <div style={{
+          position:"fixed", bottom:20, right:20, zIndex:200,
+          background:"var(--navy)", color:"#fff", borderRadius:10, padding:"12px 18px",
+          boxShadow:"var(--shadow-lg)", display:"flex", alignItems:"center", gap:10, fontSize:13.5, maxWidth:320
+        }}>
+          <Icon name="sync" size={16} color="var(--gold-light)"/>
+          {statusSincDataJud==="sincronizando"
+            ? "Sincronizando processos com o DataJud…"
+            : statusSincDataJud.novos>0
+              ? `${statusSincDataJud.novos} andamento(s) novo(s) encontrado(s) no DataJud hoje.`
+              : "Processos verificados no DataJud — nenhuma novidade hoje."}
+        </div>
+      )}
     </div>
   );
 }
