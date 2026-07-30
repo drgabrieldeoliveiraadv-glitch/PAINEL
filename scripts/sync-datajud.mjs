@@ -2,11 +2,15 @@
 // Roda de forma independente (sem navegador) via GitHub Actions.
 // 1) Busca movimentações processuais no DataJud (CNJ) para os processos judiciais.
 // 2) Busca publicações no DJEN (Diário de Justiça Eletrônico Nacional) pela OAB cadastrada.
+// 3) Sincroniza compromissos e prazos com o Google Agenda.
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const USER_ID = process.env.SUPABASE_USER_ID;
 const DATAJUD_API_KEY = process.env.DATAJUD_API_KEY;
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN;
 
 const DATAJUD_ENDPOINTS = {
   TJRJ: "https://api-publica.datajud.cnj.jus.br/api_publica_tjrj/_search",
@@ -145,6 +149,94 @@ async function sincronizarIntimacoes() {
   }
 }
 
+async function obterAccessTokenGoogle() {
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      refresh_token: GOOGLE_REFRESH_TOKEN,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!resp.ok) throw new Error(`Falha ao renovar token do Google: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  return data.access_token;
+}
+
+async function criarEventoGoogle(accessToken, evento) {
+  const resp = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(evento)
+  });
+  if (!resp.ok) throw new Error(`Falha ao criar evento: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
+async function sincronizarGoogleAgenda() {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
+    console.log("[Google Agenda] Credenciais não configuradas — pulando.");
+    return;
+  }
+
+  let accessToken;
+  try {
+    accessToken = await obterAccessTokenGoogle();
+  } catch (e) {
+    console.error("[Google Agenda] Erro ao autenticar:", e.message);
+    return;
+  }
+
+  // 1) Compromissos cadastrados na Agenda (inclui audiências lançadas como compromisso)
+  const agenda = (await sbGet("agenda")) || [];
+  let mudouAgenda = false;
+  for (const compromisso of agenda) {
+    if (compromisso.googleEventId) continue;
+    try {
+      const inicio = `${compromisso.data}T${compromisso.hora || "09:00"}:00`;
+      const evento = await criarEventoGoogle(accessToken, {
+        summary: compromisso.titulo,
+        location: compromisso.local || "",
+        description: compromisso.obs || "",
+        start: { dateTime: inicio, timeZone: "America/Sao_Paulo" },
+        end: { dateTime: inicio, timeZone: "America/Sao_Paulo" }
+      });
+      compromisso.googleEventId = evento.id;
+      mudouAgenda = true;
+      console.log(`[Google Agenda] Compromisso "${compromisso.titulo}" sincronizado.`);
+    } catch (e) {
+      console.error(`[Google Agenda] Erro ao sincronizar compromisso "${compromisso.titulo}":`, e.message);
+    }
+  }
+  if (mudouAgenda) await sbUpsert("agenda", agenda);
+
+  // 2) Prazos de Processos, Sindicâncias e PEP
+  const categorias = [["processos", "Processo"], ["sindicancias", "Sindicância"], ["peps", "PEP"]];
+  for (const [chave, rotulo] of categorias) {
+    const lista = (await sbGet(chave)) || [];
+    let mudou = false;
+    for (const item of lista) {
+      if (item.arquivado || !item.prazo || item.googleEventIdPrazo) continue;
+      try {
+        const evento = await criarEventoGoogle(accessToken, {
+          summary: `Prazo (${rotulo}): ${item.prazoAto || "sem descrição"} — ${item.numero || "sem número"}`,
+          description: "Cadastrado automaticamente pelo sistema de gestão.",
+          start: { date: item.prazo },
+          end: { date: item.prazo }
+        });
+        item.googleEventIdPrazo = evento.id;
+        mudou = true;
+        console.log(`[Google Agenda] Prazo de ${rotulo.toLowerCase()} "${item.numero || ""}" sincronizado.`);
+      } catch (e) {
+        console.error(`[Google Agenda] Erro ao sincronizar prazo (${chave}):`, e.message);
+      }
+    }
+    if (mudou) await sbUpsert(chave, lista);
+  }
+}
+
 async function main() {
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !USER_ID) {
     console.error("Faltam variáveis de ambiente obrigatórias (verifique os Secrets no GitHub).");
@@ -158,6 +250,7 @@ async function main() {
   }
 
   await sincronizarIntimacoes();
+  await sincronizarGoogleAgenda();
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
