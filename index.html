@@ -271,6 +271,8 @@ function Icon({name,size=16,color="currentColor",strokeWidth=1.8}){
     whatsapp: <><path d="M4 20l1.4-4.1A8 8 0 1112 20a8 8 0 01-4.6-1.4z" {...P}/><path d="M9 9.3c0 3 2.5 5.5 5.5 5.5" {...P}/></>,
     sino: <><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9" {...P}/><path d="M13.7 21a2 2 0 01-3.4 0" {...P}/></>,
     sync: <><path d="M21 12a9 9 0 01-15.3 6.5L3 21M3 12a9 9 0 0115.3-6.5L21 3" {...P}/><path d="M3 3v6h6M21 21v-6h-6" {...P}/></>,
+    escudo: <><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z" {...P}/><path d="M9 12l2 2 4-4" {...P}/></>,
+    balanca: <><path d="M12 3v18M8 21h8" {...P}/><path d="M4 7h16M4 7l-2.5 6a3 3 0 005 0zM20 7l-2.5 6a3 3 0 005 0z" {...P}/></>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24">{paths[name]||null}</svg>;
 }
@@ -412,6 +414,8 @@ function TelaLogin({onLogin}){
 const MENU = [
   {id:"dashboard", label:"Painel", icon:"dashboard"},
   {id:"processos", label:"Processos", icon:"processos"},
+  {id:"sindicancias", label:"Sindicâncias", icon:"escudo"},
+  {id:"peps", label:"PEP", icon:"balanca"},
   {id:"clientes", label:"Clientes", icon:"clientes"},
   {id:"tarefas", label:"Tarefas", icon:"tarefas"},
   {id:"agenda", label:"Agenda", icon:"agenda"},
@@ -521,6 +525,23 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
   const parcelasEmAberto = parcelas.filter(p=>!p.pago);
   const totalReceber = parcelasEmAberto.reduce((s,p)=>s+(Number(p.valor)||0),0);
 
+  const [perguntaIA,setPerguntaIA] = useState("");
+  const [respostaIA,setRespostaIA] = useState("");
+  const [carregandoIA,setCarregandoIA] = useState(false);
+
+  const perguntarIA = async () => {
+    if(!perguntaIA.trim()) return;
+    setCarregandoIA(true); setRespostaIA("");
+    const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.`;
+    try{
+      const texto = await chamarIA(systemPrompt, perguntaIA.trim());
+      setRespostaIA(texto);
+    }catch(e){
+      setRespostaIA("Não foi possível obter uma resposta agora. Tente novamente em instantes.");
+    }
+    setCarregandoIA(false);
+  };
+
   return (
     <div className="fade-in">
       <h2 style={{fontSize:30,marginBottom:4}}>Painel</h2>
@@ -531,6 +552,32 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
         <KpiCard label="Clientes" value={clientes.length} icon="clientes"/>
         <KpiCard label="Tarefas em aberto" value={tarefasAbertas.length} icon="tarefas" cor={tarefasAbertas.length>0?"var(--gold-dark)":"var(--navy)"}/>
         <KpiCard label="A receber" value={fmtMoeda(totalReceber)} icon="financeiro" sub={`${parcelasEmAberto.length} parcela(s) em aberto`}/>
+      </div>
+
+      <div style={{background:"linear-gradient(135deg, var(--navy) 0%, var(--navy2) 100%)",borderRadius:12,padding:"20px 22px",marginBottom:22,boxShadow:"var(--shadow)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+          <Icon name="ia" size={18} color="var(--gold-light)"/>
+          <h3 style={{fontSize:18,color:"#fff"}}>Pergunte à IA</h3>
+        </div>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          <input
+            value={perguntaIA}
+            onChange={e=>setPerguntaIA(e.target.value)}
+            onKeyDown={e=>e.key==="Enter"&&!carregandoIA&&perguntarIA()}
+            placeholder="Ex: resuma os prazos mais urgentes / o que é um agravo de instrumento?"
+            style={{flex:1,minWidth:220,padding:"11px 14px",borderRadius:8,border:"none",fontSize:14.5,outline:"none"}}/>
+          <button onClick={perguntarIA} disabled={carregandoIA} style={{padding:"11px 20px",borderRadius:8,border:"none",background:"var(--gold)",color:"var(--navy)",fontWeight:700,fontSize:14,cursor:"pointer",whiteSpace:"nowrap"}}>
+            {carregandoIA?"Pensando…":"Perguntar"}
+          </button>
+        </div>
+        {respostaIA && (
+          <div style={{marginTop:16,background:"rgba(255,255,255,0.08)",borderRadius:8,padding:"14px 16px",color:"#fff",fontSize:14.5,lineHeight:1.6,whiteSpace:"pre-wrap"}}>
+            {respostaIA}
+          </div>
+        )}
+        <div style={{marginTop:10,fontSize:12,color:"rgba(255,255,255,0.55)"}}>
+          Para gerar uma peça completa (petição, contestação, parecer...), use o <span onClick={()=>onIrPara("pecas")} style={{textDecoration:"underline",cursor:"pointer",color:"var(--gold-light)"}}>Gerador de Peças</span>.
+        </div>
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"1.3fr 1fr",gap:18}}>
@@ -703,8 +750,31 @@ function PaginaClientes({clientes,setClientes,processos,onAbrirProcesso}){
 
 const CLASSIFICACOES_PADRAO = ["Responsabilidade Civil Médica","Ética Médica (CFM/CRM)","Contrato de Prestação de Serviços Médicos","Erro Médico","Consultivo","Cível Geral","Outro"];
 
+// Conjuntos de textos reutilizados pelas telas de Processos, Sindicâncias e PEP
+const LABELS_PROCESSO = {
+  tituloPagina: "Processos", contagem:"processo(s)", novo:"Novo processo", editar:"Editar processo",
+  numero:"Número do processo", numeroPlaceholder:"0000000-00.0000.0.00.0000", semNumero:"Processo sem número",
+  excluirTitulo:"Excluir processo", excluirTexto:"Tem certeza que deseja excluir este processo? Esta ação não pode ser desfeita.",
+  buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhum processo encontrado.",
+  clienteLabel:"Cliente do escritório neste processo", mostrarDataJud:true,
+};
+const LABELS_SINDICANCIA = {
+  tituloPagina: "Sindicâncias", contagem:"sindicância(s)", novo:"Nova sindicância", editar:"Editar sindicância",
+  numero:"Número da sindicância", numeroPlaceholder:"Ex: SIND-0001/2026", semNumero:"Sindicância sem número",
+  excluirTitulo:"Excluir sindicância", excluirTexto:"Tem certeza que deseja excluir esta sindicância? Esta ação não pode ser desfeita.",
+  buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhuma sindicância encontrada.",
+  clienteLabel:"Médico(a) representado(a) nesta sindicância", mostrarDataJud:false,
+};
+const LABELS_PEP = {
+  tituloPagina: "PEP", contagem:"PEP(s)", novo:"Novo PEP", editar:"Editar PEP",
+  numero:"Número do PEP", numeroPlaceholder:"Ex: PEP-0001/2026", semNumero:"PEP sem número",
+  excluirTitulo:"Excluir PEP", excluirTexto:"Tem certeza que deseja excluir este PEP? Esta ação não pode ser desfeita.",
+  buscaPlaceholder:"Buscar por número, parte, assunto...", vazio:"Nenhum PEP encontrado.",
+  clienteLabel:"Médico(a) representado(a) neste PEP", mostrarDataJud:false,
+};
+
 // ---------- Modal: Formulário de Processo ----------
-function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente}){
+function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente,labels=LABELS_PROCESSO}){
   const [f,setF] = useState(processo || {
     numero:"", clienteId:"", sistema:"PJe", classificacao:"", vara:"",
     autor:"", reu:"", assunto:"", valorCausa:"", prazo:"", prazoAto:"", obs:""
@@ -714,29 +784,29 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente}){
 
   const salvar = (e) => {
     e.preventDefault();
-    if(!f.clienteId){ alert("Selecione o cliente do escritório neste processo."); return; }
+    if(!f.clienteId){ alert(`Selecione o ${labels.clienteLabel.toLowerCase()}.`); return; }
     onSave({...f, id: f.id || uid(), arquivado: f.arquivado||false, andamentos: f.andamentos||[]});
   };
 
   const clientesFiltrados = clientes.filter(c=>!buscaCliente.trim()||c.nome.toLowerCase().includes(buscaCliente.toLowerCase()));
 
   return (
-    <Modal titulo={processo?"Editar processo":"Novo processo"} onClose={onClose} largura={620}>
+    <Modal titulo={processo?labels.editar:labels.novo} onClose={onClose} largura={620}>
       <form onSubmit={salvar}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
-            <label style={labelStyle}>Número do processo</label>
-            <input style={campoStyle} value={f.numero} onChange={e=>s("numero",e.target.value)} placeholder="0000000-00.0000.0.00.0000"/>
+            <label style={labelStyle}>{labels.numero}</label>
+            <input style={campoStyle} value={f.numero} onChange={e=>s("numero",e.target.value)} placeholder={labels.numeroPlaceholder}/>
           </div>
           <div>
             <label style={labelStyle}>Sistema</label>
             <select style={campoStyle} value={f.sistema} onChange={e=>s("sistema",e.target.value)}>
-              <option>PJe</option><option>Eproc</option><option>Projudi</option><option>Extrajudicial</option><option>Outro</option>
+              <option>PJe</option><option>Eproc</option><option>Projudi</option><option>CRM-RJ</option><option>CFM</option><option>Extrajudicial</option><option>Outro</option>
             </select>
           </div>
         </div>
 
-        <label style={labelStyle}>Cliente do escritório neste processo *</label>
+        <label style={labelStyle}>{labels.clienteLabel} *</label>
         <input style={{...campoStyle,marginBottom:6}} placeholder="Buscar cliente..." value={buscaCliente} onChange={e=>setBuscaCliente(e.target.value)}/>
         <select required style={campoStyle} value={f.clienteId} onChange={e=>s("clienteId",e.target.value)}>
           <option value="">Selecione...</option>
@@ -798,7 +868,7 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente}){
 }
 
 // ---------- Modal: Detalhe do processo ----------
-function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento,onCumprirPrazo,onToggleArquivado,datajudApiKey}){
+function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento,onCumprirPrazo,onToggleArquivado,datajudApiKey,labels=LABELS_PROCESSO}){
   const [novoAnd,setNovoAnd] = useState("");
   const [confirmarExcluir,setConfirmarExcluir] = useState(false);
   const [buscandoDataJud,setBuscandoDataJud] = useState(false);
@@ -827,7 +897,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
   };
 
   return (
-    <Modal titulo={p.numero||"Processo sem número"} onClose={onClose} largura={640}>
+    <Modal titulo={p.numero||labels.semNumero} onClose={onClose} largura={640}>
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16}}>
         <Badge texto={p.sistema||"sistema não definido"} cor="var(--navy)"/>
         {p.classificacao && <Badge texto={p.classificacao} cor="var(--gold-dark)"/>}
@@ -836,7 +906,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
       </div>
 
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:14.5,marginBottom:18}}>
-        <div><span style={{color:"var(--text3)"}}>Cliente: </span><b>{cliente?.nome||"—"}</b></div>
+        <div><span style={{color:"var(--text3)"}}>{labels.clienteLabel.split(" neste")[0].split(" nesta")[0]}: </span><b>{cliente?.nome||"—"}</b></div>
         <div><span style={{color:"var(--text3)"}}>Vara: </span>{p.vara||"—"}</div>
         <div><span style={{color:"var(--text3)"}}>Autor: </span>{p.autor||"—"}</div>
         <div><span style={{color:"var(--text3)"}}>Réu: </span>{p.reu||"—"}</div>
@@ -857,7 +927,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
 
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
         <h4 style={{fontSize:16}}>Andamentos</h4>
-        {p.numero && (
+        {labels.mostrarDataJud && p.numero && (
           <button onClick={buscarNoDataJud} disabled={buscandoDataJud} style={{...btnSecundario,fontSize:12,padding:"6px 11px",display:"flex",alignItems:"center",gap:6}}>
             <Icon name="sync" size={13}/> {buscandoDataJud?"Consultando…":"Buscar no DataJud"}
           </button>
@@ -891,8 +961,8 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
       </div>
 
       {confirmarExcluir && (
-        <Modal titulo="Excluir processo" onClose={()=>setConfirmarExcluir(false)} largura={400}>
-          <p>Tem certeza que deseja excluir este processo? Esta ação não pode ser desfeita.</p>
+        <Modal titulo={labels.excluirTitulo} onClose={()=>setConfirmarExcluir(false)} largura={400}>
+          <p>{labels.excluirTexto}</p>
           <div style={{display:"flex",gap:10,justifyContent:"flex-end",marginTop:16}}>
             <button style={btnSecundario} onClick={()=>setConfirmarExcluir(false)}>Cancelar</button>
             <button style={btnPerigo} onClick={()=>{onExcluir(p.id);setConfirmarExcluir(false);onClose();}}>Excluir</button>
@@ -904,7 +974,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
 }
 
 // ---------- Página: Processos ----------
-function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProcessoId,onProcessoAberto,datajudApiKey}){
+function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProcessoId,onProcessoAberto,datajudApiKey,labels=LABELS_PROCESSO}){
   const [busca,setBusca] = useState("");
   const [filtroStatus,setFiltroStatus] = useState("ativos");
   const [novo,setNovo] = useState(false);
@@ -946,18 +1016,18 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
     <div className="fade-in">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
         <div>
-          <h2 style={{fontSize:30}}>Processos</h2>
-          <div style={{color:"var(--text2)",fontSize:14.5}}>{filtrados.length} processo(s) {filtroStatus==="ativos"?"ativo(s)":filtroStatus==="arquivados"?"arquivado(s)":""}</div>
+          <h2 style={{fontSize:30}}>{labels.tituloPagina}</h2>
+          <div style={{color:"var(--text2)",fontSize:14.5}}>{filtrados.length} {labels.contagem} {filtroStatus==="ativos"?"ativo(s)":filtroStatus==="arquivados"?"arquivado(s)":""}</div>
         </div>
         <button onClick={()=>setNovo(true)} style={{...btnPrimario,display:"flex",alignItems:"center",gap:7}}>
-          <Icon name="mais" size={15} color="#fff"/> Novo processo
+          <Icon name="mais" size={15} color="#fff"/> {labels.novo}
         </button>
       </div>
 
       <div style={{display:"flex",gap:12,marginBottom:18,flexWrap:"wrap",alignItems:"center"}}>
         <div style={{position:"relative",flex:1,minWidth:220,maxWidth:360}}>
           <div style={{position:"absolute",left:12,top:11,color:"var(--text3)"}}><Icon name="buscar" size={16}/></div>
-          <input value={busca} onChange={e=>setBusca(e.target.value)} placeholder="Buscar por número, parte, assunto..."
+          <input value={busca} onChange={e=>setBusca(e.target.value)} placeholder={labels.buscaPlaceholder}
             style={{width:"100%",padding:"10px 12px 10px 36px",borderRadius:8,border:"1px solid var(--border2)",fontSize:14.5,outline:"none"}}/>
         </div>
         <div style={{display:"flex",gap:6}}>
@@ -971,7 +1041,7 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
       </div>
 
       <div style={{background:"var(--card)",borderRadius:12,boxShadow:"var(--shadow)",border:"1px solid var(--border)",overflow:"hidden"}}>
-        {filtrados.length===0 && <div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>Nenhum processo encontrado.</div>}
+        {filtrados.length===0 && <div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>{labels.vazio}</div>}
         {filtrados.map((p,i)=>{
           const cli = clientePorId(p.clienteId);
           const dias = p.prazo ? diasEntre(p.prazo) : null;
@@ -982,7 +1052,7 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
               opacity: p.arquivado?0.6:1
             }}>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontWeight:600,fontSize:15}}>{p.numero||"Processo sem número"}</div>
+                <div style={{fontWeight:600,fontSize:15}}>{p.numero||labels.semNumero}</div>
                 <div style={{fontSize:12.5,color:"var(--text3)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                   {cli?.nome||"sem cliente"} {p.assunto?`· ${p.assunto}`:""}
                 </div>
@@ -997,7 +1067,7 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
       </div>
 
       {(novo||editando) && (
-        <ModalFormProcesso processo={editando} clientes={clientes} onSave={salvar} onClose={()=>{setNovo(false);setEditando(null);}}/>
+        <ModalFormProcesso processo={editando} clientes={clientes} onSave={salvar} onClose={()=>{setNovo(false);setEditando(null);}} labels={labels}/>
       )}
       {processoDetalhe && (
         <ModalDetalheProcesso
@@ -1010,6 +1080,7 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
           onCumprirPrazo={cumprirPrazo}
           onToggleArquivado={toggleArquivado}
           datajudApiKey={datajudApiKey}
+          labels={labels}
         />
       )}
     </div>
@@ -1717,6 +1788,8 @@ function AppPrincipal({usuario, onSair}){
 
   const [clientes,setClientes] = useState([]);
   const [processos,setProcessos] = useState([]);
+  const [sindicancias,setSindicancias] = useState([]);
+  const [peps,setPeps] = useState([]);
   const [tarefas,setTarefas] = useState([]);
   const [agenda,setAgenda] = useState([]);
   const [parcelas,setParcelas] = useState([]);
@@ -1729,6 +1802,8 @@ function AppPrincipal({usuario, onSair}){
     (async () => {
       setClientes(await stGet("clientes",[]));
       setProcessos(await stGet("processos",[]));
+      setSindicancias(await stGet("sindicancias",[]));
+      setPeps(await stGet("peps",[]));
       setTarefas(await stGet("tarefas",[]));
       setAgenda(await stGet("agenda",[]));
       setParcelas(await stGet("parcelas",[]));
@@ -1741,6 +1816,8 @@ function AppPrincipal({usuario, onSair}){
 
   useEffect(()=>{ if(carregado) stSet("clientes",clientes); },[clientes,carregado]);
   useEffect(()=>{ if(carregado) stSet("processos",processos); },[processos,carregado]);
+  useEffect(()=>{ if(carregado) stSet("sindicancias",sindicancias); },[sindicancias,carregado]);
+  useEffect(()=>{ if(carregado) stSet("peps",peps); },[peps,carregado]);
   useEffect(()=>{ if(carregado) stSet("tarefas",tarefas); },[tarefas,carregado]);
   useEffect(()=>{ if(carregado) stSet("agenda",agenda); },[agenda,carregado]);
   useEffect(()=>{ if(carregado) stSet("parcelas",parcelas); },[parcelas,carregado]);
@@ -1758,6 +1835,8 @@ function AppPrincipal({usuario, onSair}){
 
   const contadores = {
     processos: processos.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
+    sindicancias: sindicancias.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
+    peps: peps.filter(p=>!p.arquivado && p.prazo && diasEntre(p.prazo)<=3).length,
     tarefas: tarefas.filter(t=>t.status!=="concluida" && !t.arquivada).length,
     intimacoes: intimacoes.filter(i=>!i.vinculada).length,
   };
@@ -1772,6 +1851,8 @@ function AppPrincipal({usuario, onSair}){
       <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
         {pagina==="dashboard" && <PaginaDashboard processos={processos} clientes={clientes} tarefas={tarefas} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey}/>}
+        {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
+        {pagina==="peps" && <PaginaProcessos processos={peps} setProcessos={setPeps} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_PEP}/>}
         {pagina==="clientes" && <PaginaClientes clientes={clientes} setClientes={setClientes} processos={processos} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="tarefas" && <PaginaTarefas tarefas={tarefas} setTarefas={setTarefas} processos={processos} clientes={clientes}/>}
         {pagina==="agenda" && <PaginaAgenda agenda={agenda} setAgenda={setAgenda} processos={processos} clientes={clientes} googleToken={googleToken}/>}
