@@ -12,6 +12,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
     --navy:#0B1D3A;
@@ -445,6 +446,7 @@ const MENU = [
   {id:"intimacoes", label:"Intimações", icon:"sino"},
   {id:"financeiro", label:"Financeiro", icon:"financeiro"},
   {id:"pecas", label:"Gerador de Peças", icon:"pecas"},
+  {id:"documentos", label:"Documentos", icon:"doc"},
   {id:"config", label:"Configurações", icon:"config"},
 ];
 
@@ -1694,6 +1696,84 @@ const TIPOS_PECA = [
 ];
 
 // ---------- Timbrado: abre a peça formatada com o papel timbrado do escritório ----------
+// ---------- Documentos: tipos disponíveis e motor de geração de .docx a partir de modelo ----------
+const TIPOS_DOCUMENTO = [
+  {id:"procuracao_pep", nome:"Procuração para PEP", colecao:"peps", tokenNumero:"{{NUMERO_PEP}}"},
+  {id:"procuracao_sindicancia", nome:"Procuração para Sindicância", colecao:"sindicancias", tokenNumero:"{{NUMERO_SINDICANCIA}}"},
+  {id:"procuracao_ad_judicia", nome:"Procuração AD Judicia", colecao:"processos", tokenNumero:"{{NUMERO_PROCESSO}}"},
+  {id:"contrato_honorarios", nome:"Contrato de Honorários Advocatícios", colecao:null, tokenNumero:null},
+];
+
+function dataPorExtenso(){
+  const meses = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
+  const d = new Date();
+  return `Itaboraí, ${d.getDate()} de ${meses[d.getMonth()]} de ${d.getFullYear()}`;
+}
+
+function montarSubstituicoes({cliente, itemVinculado, tipoDoc, config}){
+  const subst = {
+    "{{NOME_CLIENTE}}": cliente?.nome || "",
+    "{{CPF_CNPJ}}": cliente?.cpfCnpj || "",
+    "{{ENDERECO}}": cliente?.endereco || "",
+    "{{PROFISSAO}}": cliente?.profissao || "",
+    "{{ESTADO_CIVIL}}": cliente?.estadoCivil || "",
+    "{{EMAIL_CLIENTE}}": cliente?.email || "",
+    "{{TELEFONE_CLIENTE}}": cliente?.telefone || "",
+    "{{NOME_ADVOGADO}}": IDENTIDADE.nome,
+    "{{OAB_NUMERO}}": config?.oabNumero || "",
+    "{{OAB_UF}}": config?.oabUf || "",
+    "{{DATA_EXTENSO}}": dataPorExtenso(),
+    "{{NUMERO_PROCESSO}}": "",
+    "{{NUMERO_SINDICANCIA}}": "",
+    "{{NUMERO_PEP}}": "",
+  };
+  if(itemVinculado && tipoDoc?.tokenNumero){
+    subst[tipoDoc.tokenNumero] = itemVinculado.numero || "";
+  }
+  return subst;
+}
+
+function escaparRegex(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function escaparXml(s){ return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+// Constrói um regex que casa o token mesmo se o Word tiver dividido o texto
+// em várias tags (runs) — comum quando o arquivo passa por correção ortográfica.
+function construirRegexToken(token){
+  const partes = token.split('').map(c => escaparRegex(c) + "(?:<[^>]+>)*");
+  return new RegExp(partes.join(''), 'g');
+}
+
+async function gerarDocxComDados(templateBase64, substituicoes){
+  const zip = await JSZip.loadAsync(templateBase64, {base64:true});
+  const caminho = "word/document.xml";
+  const arquivo = zip.file(caminho);
+  if(!arquivo) throw new Error("Modelo inválido: não encontrei word/document.xml dentro do arquivo.");
+  let xml = await arquivo.async("string");
+  for(const [token, valor] of Object.entries(substituicoes)){
+    const regex = construirRegexToken(token);
+    xml = xml.replace(regex, escaparXml(valor));
+  }
+  zip.file(caminho, xml);
+  return zip.generateAsync({type:"blob", mimeType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+
+function baixarBlob(blob, nomeArquivo){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nomeArquivo;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 3000);
+}
+
+function lerArquivoComoBase64(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 function abrirComTimbrado(tituloDoc, texto){
   const win = window.open("", "_blank");
   if(!win){
@@ -1768,6 +1848,129 @@ async function chamarIA(systemPrompt, userContent, comBusca=false){
     .filter(r=>r.url)
     .map(r=>({titulo:r.title||r.url, url:r.url}));
   return {texto: texto || "Não foi possível gerar o conteúdo. Tente novamente.", fontes};
+}
+
+// ---------- Página: Documentos ----------
+function CartaoDocumento({tipo, modelo, onUpload, clientes, processos, sindicancias, peps, config}){
+  const [clienteId,setClienteId] = useState("");
+  const [itemId,setItemId] = useState("");
+  const [gerando,setGerando] = useState(false);
+  const [erro,setErro] = useState("");
+  const inputRef = useRef(null);
+
+  const listaVinculada = tipo.colecao==="peps"?peps : tipo.colecao==="sindicancias"?sindicancias : tipo.colecao==="processos"?processos : [];
+
+  const escolherArquivo = async (e) => {
+    const file = e.target.files?.[0];
+    if(!file) return;
+    if(!file.name.toLowerCase().endsWith(".docx")){ setErro("Envie um arquivo .docx (Word)."); return; }
+    setErro("");
+    const base64 = await lerArquivoComoBase64(file);
+    onUpload(tipo.id, {nomeArquivo:file.name, base64, enviadoEm:fmtDataHoje()});
+    e.target.value = "";
+  };
+
+  const gerar = async () => {
+    if(!clienteId){ setErro("Selecione o cliente."); return; }
+    setErro(""); setGerando(true);
+    try{
+      const cliente = clientes.find(c=>c.id===clienteId);
+      const itemVinculado = listaVinculada.find(i=>i.id===itemId) || null;
+      const substituicoes = montarSubstituicoes({cliente, itemVinculado, tipoDoc:tipo, config});
+      const blob = await gerarDocxComDados(modelo.base64, substituicoes);
+      const nomeSaida = `${tipo.nome} - ${cliente.nome}.docx`;
+      baixarBlob(blob, nomeSaida);
+    }catch(e){
+      setErro(e.message || "Erro ao gerar o documento. Verifique se o modelo enviado é um .docx válido.");
+    }
+    setGerando(false);
+  };
+
+  return (
+    <div style={{background:"var(--card)",borderRadius:12,padding:"20px 22px",boxShadow:"var(--shadow)",border:"1px solid var(--border)"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+        <Icon name="doc" size={17} color="var(--navy)"/>
+        <h3 style={{fontSize:17}}>{tipo.nome}</h3>
+      </div>
+
+      {!modelo && (
+        <div>
+          <div style={{fontSize:13,color:"var(--text3)",marginBottom:12}}>Nenhum modelo enviado ainda.</div>
+          <input ref={inputRef} type="file" accept=".docx" onChange={escolherArquivo} style={{display:"none"}}/>
+          <button onClick={()=>inputRef.current.click()} style={{...btnSecundario,display:"flex",alignItems:"center",gap:7}}>
+            <Icon name="mais" size={14}/> Enviar modelo (.docx)
+          </button>
+        </div>
+      )}
+
+      {modelo && (
+        <>
+          <div style={{fontSize:12.5,color:"var(--text3)",marginBottom:14,display:"flex",alignItems:"center",gap:8}}>
+            <Badge texto="modelo enviado" cor="var(--green)"/> {modelo.nomeArquivo}
+            <input ref={inputRef} type="file" accept=".docx" onChange={escolherArquivo} style={{display:"none"}}/>
+            <span onClick={()=>inputRef.current.click()} style={{cursor:"pointer",color:"var(--navy)",fontWeight:600,fontSize:12}}>trocar</span>
+          </div>
+
+          <label style={labelStyle}>Cliente</label>
+          <select style={campoStyle} value={clienteId} onChange={e=>setClienteId(e.target.value)}>
+            <option value="">Selecione...</option>
+            {clientes.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+
+          {tipo.colecao && (
+            <>
+              <label style={labelStyle}>{tipo.nome.includes("PEP")?"PEP":tipo.nome.includes("Sindicância")?"Sindicância":"Processo"} vinculado (opcional)</label>
+              <select style={campoStyle} value={itemId} onChange={e=>setItemId(e.target.value)}>
+                <option value="">Nenhum</option>
+                {listaVinculada.map(i=><option key={i.id} value={i.id}>{i.numero||"sem número"}</option>)}
+              </select>
+            </>
+          )}
+
+          {erro && <div style={{color:"var(--red)",fontSize:12.5,marginBottom:10}}>{erro}</div>}
+
+          <button onClick={gerar} disabled={gerando} style={{...btnPrimario,width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8,marginTop:4}}>
+            <Icon name="doc" size={14} color="#fff"/> {gerando?"Gerando…":"Gerar documento (.docx)"}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PaginaDocumentos({modelos,setModelos,clientes,processos,sindicancias,peps,config}){
+  const salvarModelo = (tipoId, modelo) => {
+    setModelos(prev=>({...prev, [tipoId]: modelo}));
+  };
+
+  return (
+    <div className="fade-in">
+      <h2 style={{fontSize:30,marginBottom:4}}>Documentos</h2>
+      <div style={{color:"var(--text2)",marginBottom:22,fontSize:14.5}}>
+        Gere procurações e contratos a partir dos seus próprios modelos, com os dados do cliente preenchidos automaticamente.
+      </div>
+
+      <div style={{background:"var(--bg2)",borderRadius:9,padding:"12px 16px",marginBottom:22,fontSize:13}}>
+        <b>Como preparar um modelo:</b> escreva o documento normalmente no Word (de preferência a partir de uma cópia do seu timbrado) e, no lugar dos dados que devem ser preenchidos, digite campos como <code>{"{{NOME_CLIENTE}}"}</code>, <code>{"{{CPF_CNPJ}}"}</code>, <code>{"{{ENDERECO}}"}</code>, <code>{"{{DATA_EXTENSO}}"}</code>. Depois é só enviar o arquivo abaixo.
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill, minmax(320px, 1fr))",gap:18}}>
+        {TIPOS_DOCUMENTO.map(tipo=>(
+          <CartaoDocumento
+            key={tipo.id}
+            tipo={tipo}
+            modelo={modelos[tipo.id]}
+            onUpload={salvarModelo}
+            clientes={clientes}
+            processos={processos}
+            sindicancias={sindicancias}
+            peps={peps}
+            config={config}
+          />
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function PaginaPecas({processos,clientes}){
@@ -1974,6 +2177,7 @@ function AppPrincipal({usuario, onSair}){
   const [parcelas,setParcelas] = useState([]);
   const [despesas,setDespesas] = useState([]);
   const [intimacoes,setIntimacoes] = useState([]);
+  const [modelos,setModelos] = useState({});
   const [config,setConfig] = useState({oabNumero:"",oabUf:"RJ",datajudApiKey:"",googleClientId:""});
   const [googleToken,setGoogleToken] = useState(null);
 
@@ -1988,6 +2192,7 @@ function AppPrincipal({usuario, onSair}){
       setParcelas(await stGet("parcelas",[]));
       setDespesas(await stGet("despesas",[]));
       setIntimacoes(await stGet("intimacoes",[]));
+      setModelos(await stGet("modelos",{}));
       setConfig(await stGet("config",{oabNumero:"",oabUf:"RJ",datajudApiKey:"",googleClientId:""}));
       setCarregado(true);
     })();
@@ -2002,6 +2207,7 @@ function AppPrincipal({usuario, onSair}){
   useEffect(()=>{ if(carregado) stSet("parcelas",parcelas); },[parcelas,carregado]);
   useEffect(()=>{ if(carregado) stSet("despesas",despesas); },[despesas,carregado]);
   useEffect(()=>{ if(carregado) stSet("intimacoes",intimacoes); },[intimacoes,carregado]);
+  useEffect(()=>{ if(carregado) stSet("modelos",modelos); },[modelos,carregado]);
   useEffect(()=>{ if(carregado) stSet("config",config); },[config,carregado]);
 
   const conectarGoogle = () => {
@@ -2069,6 +2275,7 @@ function AppPrincipal({usuario, onSair}){
         {pagina==="intimacoes" && <PaginaIntimacoes intimacoes={intimacoes} setIntimacoes={setIntimacoes} processos={processos} setProcessos={setProcessos} oabNumero={config.oabNumero} oabUf={config.oabUf} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="financeiro" && <PaginaFinanceiro parcelas={parcelas} setParcelas={setParcelas} despesas={despesas} setDespesas={setDespesas} processos={processos} clientes={clientes}/>}
         {pagina==="pecas" && <PaginaPecas processos={processos} clientes={clientes}/>}
+        {pagina==="documentos" && <PaginaDocumentos modelos={modelos} setModelos={setModelos} clientes={clientes} processos={processos} sindicancias={sindicancias} peps={peps} config={config}/>}
         {pagina==="config" && <PaginaConfig usuario={usuario} config={config} setConfig={setConfig} googleToken={googleToken} onConectarGoogle={conectarGoogle}/>}
       </div>
       {statusSincDataJud && (
