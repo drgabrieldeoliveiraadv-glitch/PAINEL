@@ -528,14 +528,17 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
   const [perguntaIA,setPerguntaIA] = useState("");
   const [respostaIA,setRespostaIA] = useState("");
   const [carregandoIA,setCarregandoIA] = useState(false);
+  const [comBuscaIA,setComBuscaIA] = useState(false);
+  const [fontesIA,setFontesIA] = useState([]);
 
   const perguntarIA = async () => {
     if(!perguntaIA.trim()) return;
-    setCarregandoIA(true); setRespostaIA("");
-    const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.`;
+    setCarregandoIA(true); setRespostaIA(""); setFontesIA([]);
+    const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.${comBuscaIA?" Pesquise na internet para fundamentar a resposta, priorizando o Jusbrasil para jurisprudência, e cite as fontes ao final.":""}`;
     try{
-      const texto = await chamarIA(systemPrompt, perguntaIA.trim());
+      const {texto,fontes} = await chamarIA(systemPrompt, perguntaIA.trim(), comBuscaIA);
       setRespostaIA(texto);
+      setFontesIA(fontes||[]);
     }catch(e){
       setRespostaIA("Não foi possível obter uma resposta agora. Tente novamente em instantes.");
     }
@@ -567,12 +570,26 @@ function PaginaDashboard({processos,clientes,tarefas,parcelas,onIrPara,onAbrirPr
             placeholder="Ex: resuma os prazos mais urgentes / o que é um agravo de instrumento?"
             style={{flex:1,minWidth:220,padding:"11px 14px",borderRadius:8,border:"none",fontSize:14.5,outline:"none"}}/>
           <button onClick={perguntarIA} disabled={carregandoIA} style={{padding:"11px 20px",borderRadius:8,border:"none",background:"var(--gold)",color:"var(--navy)",fontWeight:700,fontSize:14,cursor:"pointer",whiteSpace:"nowrap"}}>
-            {carregandoIA?"Pensando…":"Perguntar"}
+            {carregandoIA?(comBuscaIA?"Pesquisando…":"Pensando…"):"Perguntar"}
           </button>
         </div>
+        <label style={{display:"flex",alignItems:"center",gap:7,fontSize:12.5,color:"rgba(255,255,255,0.75)",marginTop:10,cursor:"pointer"}}>
+          <input type="checkbox" checked={comBuscaIA} onChange={e=>setComBuscaIA(e.target.checked)}/>
+          Fundamentar com pesquisa na web (Jusbrasil, legislação, jurisprudência)
+        </label>
         {respostaIA && (
           <div style={{marginTop:16,background:"rgba(255,255,255,0.08)",borderRadius:8,padding:"14px 16px",color:"#fff",fontSize:14.5,lineHeight:1.6,whiteSpace:"pre-wrap"}}>
             {respostaIA}
+          </div>
+        )}
+        {fontesIA.length>0 && (
+          <div style={{marginTop:10}}>
+            <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,color:"rgba(255,255,255,0.5)",marginBottom:6}}>Fontes pesquisadas</div>
+            {fontesIA.map((f,i)=>(
+              <div key={i} style={{fontSize:12.5,marginBottom:3}}>
+                <a href={f.url} target="_blank" rel="noreferrer" style={{color:"var(--gold-light)"}}>{f.titulo}</a>
+              </div>
+            ))}
           </div>
         )}
         <div style={{marginTop:10,fontSize:12,color:"rgba(255,255,255,0.55)"}}>
@@ -1598,20 +1615,27 @@ const TIPOS_PECA = [
   "Memorial","E-mail para cliente","Outro (descrever abaixo)"
 ];
 
-async function chamarIA(systemPrompt, userContent){
+async function chamarIA(systemPrompt, userContent, comBusca=false){
+  const body = {
+    model:"claude-sonnet-4-6",
+    max_tokens:1000,
+    system: systemPrompt,
+    messages:[{role:"user", content:userContent}]
+  };
+  if(comBusca){ body.tools = [{type:"web_search_20250305", name:"web_search"}]; }
   const resp = await fetch("https://api.anthropic.com/v1/messages", {
     method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({
-      model:"claude-sonnet-4-6",
-      max_tokens:1000,
-      system: systemPrompt,
-      messages:[{role:"user", content:userContent}]
-    })
+    body: JSON.stringify(body)
   });
   const data = await resp.json();
   const texto = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
-  return texto || "Não foi possível gerar o conteúdo. Tente novamente.";
+  const fontes = (data.content||[])
+    .filter(b=>b.type==="web_search_tool_result")
+    .flatMap(b=>Array.isArray(b.content)?b.content:[])
+    .filter(r=>r.url)
+    .map(r=>({titulo:r.title||r.url, url:r.url}));
+  return {texto: texto || "Não foi possível gerar o conteúdo. Tente novamente.", fontes};
 }
 
 function PaginaPecas({processos,clientes}){
@@ -1621,12 +1645,14 @@ function PaginaPecas({processos,clientes}){
   const [resultado,setResultado] = useState("");
   const [carregando,setCarregando] = useState(false);
   const [copiado,setCopiado] = useState(false);
+  const [comBusca,setComBusca] = useState(false);
+  const [fontes,setFontes] = useState([]);
 
   const proc = processos.find(p=>p.id===processoId);
   const cliente = proc ? clientes.find(c=>c.id===proc.clienteId) : null;
 
   const gerar = async () => {
-    setCarregando(true); setResultado(""); setCopiado(false);
+    setCarregando(true); setResultado(""); setFontes([]); setCopiado(false);
     const contextoProcesso = proc ? `
 Número do processo: ${proc.numero||"não informado"}
 Vara/Comarca: ${proc.vara||"não informado"}
@@ -1638,8 +1664,11 @@ Cliente do escritório neste processo: ${cliente?.nome||"não informado"}
 Últimos andamentos: ${(proc.andamentos||[]).slice(-5).map(a=>`${a.data}: ${a.desc}`).join(" | ")||"nenhum"}
 `.trim() : "Nenhum processo vinculado — use apenas as instruções abaixo.";
 
+    const instrucaoBusca = comBusca ? `
+Antes de redigir, pesquise na internet legislação, súmulas e jurisprudência atual que fundamentem esta peça. Priorize o Jusbrasil como fonte de jurisprudência e citações; use também sites oficiais (STJ, STF, CFM/CRM, Planalto) quando pertinente. Cite as fontes encontradas de forma resumida ao final do texto, em uma seção "Fontes consultadas".` : "";
+
     const systemPrompt = `Você é um assistente de redação jurídica para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Redija minutas profissionais, tecnicamente corretas e em português jurídico formal, seguindo a estrutura padrão de peças processuais brasileiras (endereçamento, qualificação das partes, dos fatos, do direito, dos pedidos, valor da causa, fecho) quando aplicável ao tipo de documento.
-Se o contexto fornecido não tiver fatos suficientes para fundamentar alguma parte do documento, diga isso explicitamente no início do rascunho, indicando o que falta — nunca invente fatos, datas, valores ou decisões que não estejam no contexto fornecido.
+Se o contexto fornecido não tiver fatos suficientes para fundamentar alguma parte do documento, diga isso explicitamente no início do rascunho, indicando o que falta — nunca invente fatos, datas, valores ou decisões que não estejam no contexto fornecido.${instrucaoBusca}
 Isto é apenas uma minuta de trabalho para revisão do advogado responsável antes de qualquer protocolo.`;
 
     const userContent = `Tipo de peça: ${tipo}
@@ -1651,8 +1680,9 @@ Instruções adicionais do advogado:
 ${instrucoes || "nenhuma"}`;
 
     try{
-      const texto = await chamarIA(systemPrompt, userContent);
+      const {texto,fontes} = await chamarIA(systemPrompt, userContent, comBusca);
       setResultado(texto);
+      setFontes(fontes||[]);
     }catch(e){
       setResultado("Ocorreu um erro ao gerar o rascunho. Tente novamente em instantes.");
     }
@@ -1684,8 +1714,12 @@ ${instrucoes || "nenhuma"}`;
           <label style={labelStyle}>Instruções específicas</label>
           <textarea rows={8} style={{...campoStyle,resize:"vertical"}} value={instrucoes} onChange={e=>setInstrucoes(e.target.value)}
             placeholder="Descreva os fatos, teses, pedidos específicos e qualquer detalhe que a IA deva considerar..."/>
+          <label style={{display:"flex",alignItems:"center",gap:8,fontSize:13.5,marginBottom:14,cursor:"pointer",color:"var(--text2)"}}>
+            <input type="checkbox" checked={comBusca} onChange={e=>setComBusca(e.target.checked)}/>
+            Fundamentar com pesquisa na web (Jusbrasil, legislação, jurisprudência)
+          </label>
           <button onClick={gerar} disabled={carregando} style={{...btnPrimario,width:"100%",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-            <Icon name="ia" size={15} color="#fff"/> {carregando?"Gerando…":"Gerar rascunho"}
+            <Icon name="ia" size={15} color="#fff"/> {carregando?(comBusca?"Pesquisando e redigindo…":"Gerando…"):"Gerar rascunho"}
           </button>
         </div>
 
@@ -1696,7 +1730,7 @@ ${instrucoes || "nenhuma"}`;
             </div>
           )}
           {carregando && (
-            <div style={{color:"var(--text3)",fontSize:14.5,textAlign:"center",padding:"60px 20px"}}>Redigindo a minuta…</div>
+            <div style={{color:"var(--text3)",fontSize:14.5,textAlign:"center",padding:"60px 20px"}}>{comBusca?"Pesquisando fontes e redigindo a minuta…":"Redigindo a minuta…"}</div>
           )}
           {resultado && (
             <>
@@ -1704,6 +1738,16 @@ ${instrucoes || "nenhuma"}`;
                 <button onClick={copiar} style={{...btnSecundario,fontSize:12.5,padding:"7px 12px"}}>{copiado?"Copiado!":"Copiar texto"}</button>
               </div>
               <div style={{whiteSpace:"pre-wrap",fontSize:14.5,lineHeight:1.6,fontFamily:"'EB Garamond',serif"}}>{resultado}</div>
+              {fontes.length>0 && (
+                <div style={{marginTop:18,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+                  <div style={{fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,color:"var(--text3)",marginBottom:8}}>Fontes pesquisadas</div>
+                  {fontes.map((f,i)=>(
+                    <div key={i} style={{fontSize:13,marginBottom:4}}>
+                      <a href={f.url} target="_blank" rel="noreferrer" style={{color:"var(--navy)"}}>{f.titulo}</a>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>
