@@ -538,7 +538,7 @@ function Badge({texto,cor}){
 }
 
 // ---------- Página: Dashboard ----------
-function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,setTarefas,agenda,setAgenda,parcelas,onIrPara,onAbrirProcesso}){
+function PaginaDashboard({processos,setProcessos,sindicancias,setSindicancias,peps,setPeps,clientes,setClientes,tarefas,setTarefas,agenda,setAgenda,parcelas,onIrPara,onAbrirProcesso}){
   // Resumo de prazos por categoria, cada uma com sua regra de contagem (dias úteis x dias corridos)
   const resumoPrazos = (lista, usarDiasUteis) => {
     const ativosComPrazo = lista.filter(p=>!p.arquivado && p.prazo);
@@ -574,42 +574,103 @@ function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,setTarefa
   const [carregandoIA,setCarregandoIA] = useState(false);
   const [comBuscaIA,setComBuscaIA] = useState(false);
   const [fontesIA,setFontesIA] = useState([]);
-  const [acaoExecutada,setAcaoExecutada] = useState(null);
+  const [acoesExecutadas,setAcoesExecutadas] = useState([]);
 
-  const executarAcaoIA = (acao) => {
-    if(acao.acao==="criar_tarefa" && acao.titulo){
-      const nova = {id:uid(), titulo:acao.titulo, processoId:"", prazo:acao.prazo||"", status:"afazer", obs:"Criada pela IA.", arquivada:false};
-      setTarefas(ts=>[...ts, nova]);
-      return `Tarefa criada: "${acao.titulo}"${acao.prazo?` com prazo em ${fmtData(acao.prazo)}`:""}.`;
+  // Executa uma lista de ações pedidas pela IA em sequência, mantendo cópias locais
+  // para que uma ação (ex: criar cliente) já esteja disponível para a próxima (ex: criar processo para ele).
+  const executarAcoesIA = (acoes) => {
+    let clientesLocais = [...clientes];
+    let processosLocais = [...processos];
+    let sindicanciasLocais = [...sindicancias];
+    let pepsLocais = [...peps];
+    let tarefasLocais = [...tarefas];
+    let agendaLocais = [...agenda];
+    const mensagens = [];
+
+    const encontrarCliente = (nome) => {
+      if(!nome) return null;
+      const alvo = nome.trim().toLowerCase();
+      return clientesLocais.find(c=>c.nome.toLowerCase().includes(alvo)) || null;
+    };
+
+    for(const acao of acoes){
+      try{
+        if(acao.acao==="criar_cliente" && acao.nome){
+          const novo = {id:uid(), nome:acao.nome, cpfCnpj:acao.cpfCnpj||"", telefone:acao.telefone||"", email:acao.email||"", endereco:acao.endereco||"", profissao:acao.profissao||"", estadoCivil:acao.estadoCivil||"", obs:"Cadastrado pela IA."};
+          clientesLocais = [...clientesLocais, novo];
+          mensagens.push(`Cliente "${acao.nome}" cadastrado.`);
+        }
+        else if(acao.acao==="criar_tarefa" && acao.titulo){
+          tarefasLocais = [...tarefasLocais, {id:uid(), titulo:acao.titulo, processoId:"", prazo:acao.prazo||"", status:"afazer", obs:"Criada pela IA.", arquivada:false}];
+          mensagens.push(`Tarefa criada: "${acao.titulo}"${acao.prazo?` com prazo em ${fmtData(acao.prazo)}`:""}.`);
+        }
+        else if(acao.acao==="criar_compromisso" && acao.titulo && acao.data){
+          agendaLocais = [...agendaLocais, {id:uid(), titulo:acao.titulo, data:acao.data, hora:acao.hora||"09:00", local:acao.local||"", processoId:"", obs:"Criado pela IA."}];
+          mensagens.push(`Compromisso agendado: "${acao.titulo}" em ${fmtData(acao.data)}${acao.hora?` às ${acao.hora}`:""}.`);
+        }
+        else if((acao.acao==="criar_processo"||acao.acao==="criar_sindicancia"||acao.acao==="criar_pep") && acao.clienteNome){
+          const cliente = encontrarCliente(acao.clienteNome);
+          if(!cliente){
+            mensagens.push(`Não encontrei um cliente chamado "${acao.clienteNome}" — peça para eu cadastrar o cliente primeiro (ex: "cadastra o cliente ${acao.clienteNome} e depois cria o processo").`);
+          }else{
+            const novoItem = {id:uid(), numero:acao.numero||"", clienteId:cliente.id, sistema: acao.acao==="criar_processo"?"PJe":"Extrajudicial", classificacao:"", vara:"", autor:"", reu:"", assunto:acao.assunto||"", valorCausa:"", prazo:acao.prazo||"", prazoAto:acao.prazoAto||"", obs:"Criado pela IA.", arquivado:false, andamentos:[]};
+            const rotulo = acao.acao==="criar_processo"?"Processo":acao.acao==="criar_sindicancia"?"Sindicância":"PEP";
+            if(acao.acao==="criar_processo") processosLocais = [...processosLocais, novoItem];
+            if(acao.acao==="criar_sindicancia") sindicanciasLocais = [...sindicanciasLocais, novoItem];
+            if(acao.acao==="criar_pep") pepsLocais = [...pepsLocais, novoItem];
+            mensagens.push(`${rotulo} criado(a) para ${cliente.nome}${acao.numero?` (nº ${acao.numero})`:""}.`);
+          }
+        }
+        else if(acao.acao==="concluir_tarefa" && acao.tituloTarefa){
+          const alvo = acao.tituloTarefa.trim().toLowerCase();
+          const idx = tarefasLocais.findIndex(t=>t.titulo.toLowerCase().includes(alvo) && t.status!=="concluida");
+          if(idx>=0){
+            const tituloAchado = tarefasLocais[idx].titulo;
+            tarefasLocais = tarefasLocais.map((t,i)=>i===idx?{...t,status:"concluida"}:t);
+            mensagens.push(`Tarefa "${tituloAchado}" marcada como concluída.`);
+          }else{
+            mensagens.push(`Não encontrei uma tarefa em aberto parecida com "${acao.tituloTarefa}".`);
+          }
+        }
+      }catch(e){ /* ignora ação individual malformada e segue para a próxima */ }
     }
-    if(acao.acao==="criar_compromisso" && acao.titulo && acao.data){
-      const novo = {id:uid(), titulo:acao.titulo, data:acao.data, hora:acao.hora||"09:00", local:acao.local||"", processoId:"", obs:"Criado pela IA."};
-      setAgenda(ag=>[...ag, novo]);
-      return `Compromisso agendado: "${acao.titulo}" em ${fmtData(acao.data)}${acao.hora?` às ${acao.hora}`:""}.`;
-    }
-    return null;
+
+    setClientes(clientesLocais);
+    setProcessos(processosLocais);
+    setSindicancias(sindicanciasLocais);
+    setPeps(pepsLocais);
+    setTarefas(tarefasLocais);
+    setAgenda(agendaLocais);
+    return mensagens;
   };
 
   const perguntarIA = async () => {
     if(!perguntaIA.trim()) return;
-    setCarregandoIA(true); setRespostaIA(""); setFontesIA([]); setAcaoExecutada(null);
+    setCarregandoIA(true); setRespostaIA(""); setFontesIA([]); setAcoesExecutadas([]);
     const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.${comBuscaIA?" Pesquise na internet para fundamentar a resposta, priorizando o Jusbrasil para jurisprudência, e cite as fontes ao final.":""}
 
-Além de responder perguntas, você pode executar duas ações diretamente no sistema quando o usuário pedir claramente:
-1. Criar uma tarefa: se o pedido for para lembrar, anotar ou criar uma tarefa, inclua na resposta o bloco: <<ACAO>>{"acao":"criar_tarefa","titulo":"texto curto da tarefa","prazo":"AAAA-MM-DD ou vazio se não houver data"}<<FIM_ACAO>>
-2. Agendar um compromisso: se o pedido for para marcar/agendar algo em uma data, inclua: <<ACAO>>{"acao":"criar_compromisso","titulo":"texto curto","data":"AAAA-MM-DD","hora":"HH:MM ou vazio","local":"opcional"}<<FIM_ACAO>>
-Hoje é ${fmtDataHoje()}. Use essa data como referência para calcular datas relativas ("amanhã", "sexta-feira", etc.). Inclua o bloco <<ACAO>> apenas quando o pedido for claramente para criar/agendar algo, e escreva uma frase curta de confirmação junto. Se não for um pedido de ação, responda normalmente, sem nenhum bloco <<ACAO>>.`;
+Além de responder perguntas, você pode executar ações diretamente no sistema quando o usuário pedir claramente. Para cada ação, inclua na resposta um bloco separado <<ACAO>>{...}<<FIM_ACAO>> (pode incluir mais de um bloco se o pedido envolver várias ações, por exemplo cadastrar um cliente e já criar um processo para ele). Ações disponíveis:
+- Criar cliente: <<ACAO>>{"acao":"criar_cliente","nome":"...","cpfCnpj":"opcional","telefone":"opcional","email":"opcional","endereco":"opcional"}<<FIM_ACAO>>
+- Criar tarefa: <<ACAO>>{"acao":"criar_tarefa","titulo":"...","prazo":"AAAA-MM-DD ou vazio"}<<FIM_ACAO>>
+- Agendar compromisso: <<ACAO>>{"acao":"criar_compromisso","titulo":"...","data":"AAAA-MM-DD","hora":"HH:MM ou vazio","local":"opcional"}<<FIM_ACAO>>
+- Criar processo judicial: <<ACAO>>{"acao":"criar_processo","clienteNome":"nome do cliente já cadastrado","numero":"opcional","assunto":"opcional","prazo":"AAAA-MM-DD opcional","prazoAto":"opcional"}<<FIM_ACAO>>
+- Criar sindicância: <<ACAO>>{"acao":"criar_sindicancia","clienteNome":"...","numero":"opcional","assunto":"opcional","prazo":"AAAA-MM-DD opcional"}<<FIM_ACAO>>
+- Criar PEP: <<ACAO>>{"acao":"criar_pep","clienteNome":"...","numero":"opcional","assunto":"opcional","prazo":"AAAA-MM-DD opcional"}<<FIM_ACAO>>
+- Concluir tarefa existente: <<ACAO>>{"acao":"concluir_tarefa","tituloTarefa":"parte do título da tarefa"}<<FIM_ACAO>>
+Hoje é ${fmtDataHoje()}. Use essa data como referência para calcular datas relativas ("amanhã", "sexta-feira", etc.). Para criar processo/sindicância/PEP, o cliente precisa já existir ou ser criado no mesmo pedido (nesse caso inclua o bloco de criar_cliente ANTES do bloco do processo). Inclua blocos <<ACAO>> apenas quando o pedido for claramente para criar/alterar algo, e escreva uma frase curta de confirmação junto. Se não for um pedido de ação, responda normalmente, sem nenhum bloco <<ACAO>>.`;
     try{
       const {texto,fontes} = await chamarIA(systemPrompt, perguntaIA.trim(), comBuscaIA);
-      const m = texto.match(/<<ACAO>>([\s\S]*?)<<FIM_ACAO>>/);
-      let textoLimpo = texto;
-      if(m){
-        textoLimpo = texto.replace(/<<ACAO>>[\s\S]*?<<FIM_ACAO>>/,"").trim();
-        try{
-          const acao = JSON.parse(m[1]);
-          const confirmacao = executarAcaoIA(acao);
-          if(confirmacao) setAcaoExecutada(confirmacao);
-        }catch(e){ /* se o JSON vier malformado, apenas mostra o texto normalmente */ }
+      const matches = [...texto.matchAll(/<<ACAO>>([\s\S]*?)<<FIM_ACAO>>/g)];
+      let textoLimpo = texto.replace(/<<ACAO>>[\s\S]*?<<FIM_ACAO>>/g,"").trim();
+      if(matches.length>0){
+        const acoes = [];
+        for(const m of matches){
+          try{ acoes.push(JSON.parse(m[1])); }catch(e){ /* ignora bloco malformado */ }
+        }
+        if(acoes.length>0){
+          const mensagens = executarAcoesIA(acoes);
+          setAcoesExecutadas(mensagens);
+        }
       }
       setRespostaIA(textoLimpo || "Feito!");
       setFontesIA(fontes||[]);
@@ -687,9 +748,13 @@ Hoje é ${fmtDataHoje()}. Use essa data como referência para calcular datas rel
           <input type="checkbox" checked={comBuscaIA} onChange={e=>setComBuscaIA(e.target.checked)}/>
           Fundamentar com pesquisa na web (Jusbrasil, legislação, jurisprudência)
         </label>
-        {acaoExecutada && (
-          <div style={{marginTop:16,background:"rgba(62,150,90,0.25)",border:"1px solid rgba(62,150,90,0.5)",borderRadius:8,padding:"12px 16px",color:"#fff",fontSize:14,display:"flex",alignItems:"center",gap:8}}>
-            <Icon name="check" size={15} color="#8FE0A8"/> {acaoExecutada}
+        {acoesExecutadas.length>0 && (
+          <div style={{marginTop:16,display:"flex",flexDirection:"column",gap:6}}>
+            {acoesExecutadas.map((msg,i)=>(
+              <div key={i} style={{background:"rgba(62,150,90,0.25)",border:"1px solid rgba(62,150,90,0.5)",borderRadius:8,padding:"12px 16px",color:"#fff",fontSize:14,display:"flex",alignItems:"center",gap:8}}>
+                <Icon name="check" size={15} color="#8FE0A8"/> {msg}
+              </div>
+            ))}
           </div>
         )}
         {respostaIA && (
@@ -2350,7 +2415,7 @@ function AppPrincipal({usuario, onSair}){
     <div style={{display:"flex",minHeight:"100vh"}}>
       <Sidebar paginaAtual={pagina} onIrPara={(p)=>{setPagina(p);setAbrirProcessoId(null);}} usuario={usuario} onSair={onSair} contadores={contadores}/>
       <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
-        {pagina==="dashboard" && <PaginaDashboard processos={processos} sindicancias={sindicancias} peps={peps} clientes={clientes} tarefas={tarefas} setTarefas={setTarefas} agenda={agenda} setAgenda={setAgenda} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
+        {pagina==="dashboard" && <PaginaDashboard processos={processos} setProcessos={setProcessos} sindicancias={sindicancias} setSindicancias={setSindicancias} peps={peps} setPeps={setPeps} clientes={clientes} setClientes={setClientes} tarefas={tarefas} setTarefas={setTarefas} agenda={agenda} setAgenda={setAgenda} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey}/>}
         {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
         {pagina==="peps" && <PaginaProcessos processos={peps} setProcessos={setPeps} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_PEP}/>}
