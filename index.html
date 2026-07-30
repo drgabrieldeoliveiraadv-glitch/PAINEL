@@ -538,7 +538,7 @@ function Badge({texto,cor}){
 }
 
 // ---------- Página: Dashboard ----------
-function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,parcelas,onIrPara,onAbrirProcesso}){
+function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,setTarefas,agenda,setAgenda,parcelas,onIrPara,onAbrirProcesso}){
   // Resumo de prazos por categoria, cada uma com sua regra de contagem (dias úteis x dias corridos)
   const resumoPrazos = (lista, usarDiasUteis) => {
     const ativosComPrazo = lista.filter(p=>!p.arquivado && p.prazo);
@@ -574,14 +574,44 @@ function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,parcelas,
   const [carregandoIA,setCarregandoIA] = useState(false);
   const [comBuscaIA,setComBuscaIA] = useState(false);
   const [fontesIA,setFontesIA] = useState([]);
+  const [acaoExecutada,setAcaoExecutada] = useState(null);
+
+  const executarAcaoIA = (acao) => {
+    if(acao.acao==="criar_tarefa" && acao.titulo){
+      const nova = {id:uid(), titulo:acao.titulo, processoId:"", prazo:acao.prazo||"", status:"afazer", obs:"Criada pela IA.", arquivada:false};
+      setTarefas(ts=>[...ts, nova]);
+      return `Tarefa criada: "${acao.titulo}"${acao.prazo?` com prazo em ${fmtData(acao.prazo)}`:""}.`;
+    }
+    if(acao.acao==="criar_compromisso" && acao.titulo && acao.data){
+      const novo = {id:uid(), titulo:acao.titulo, data:acao.data, hora:acao.hora||"09:00", local:acao.local||"", processoId:"", obs:"Criado pela IA."};
+      setAgenda(ag=>[...ag, novo]);
+      return `Compromisso agendado: "${acao.titulo}" em ${fmtData(acao.data)}${acao.hora?` às ${acao.hora}`:""}.`;
+    }
+    return null;
+  };
 
   const perguntarIA = async () => {
     if(!perguntaIA.trim()) return;
-    setCarregandoIA(true); setRespostaIA(""); setFontesIA([]);
-    const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.${comBuscaIA?" Pesquise na internet para fundamentar a resposta, priorizando o Jusbrasil para jurisprudência, e cite as fontes ao final.":""}`;
+    setCarregandoIA(true); setRespostaIA(""); setFontesIA([]); setAcaoExecutada(null);
+    const systemPrompt = `Você é um assistente jurídico para um escritório de advocacia brasileiro especializado em Direito Médico, no Rio de Janeiro. Responda de forma direta, prática e em português. Se a pergunta pedir um documento ou minuta completa, sugira usar o "Gerador de Peças" para isso e dê só um resumo rápido aqui. Nunca invente fatos, números de processo ou dados específicos que não foram fornecidos.${comBuscaIA?" Pesquise na internet para fundamentar a resposta, priorizando o Jusbrasil para jurisprudência, e cite as fontes ao final.":""}
+
+Além de responder perguntas, você pode executar duas ações diretamente no sistema quando o usuário pedir claramente:
+1. Criar uma tarefa: se o pedido for para lembrar, anotar ou criar uma tarefa, inclua na resposta o bloco: <<ACAO>>{"acao":"criar_tarefa","titulo":"texto curto da tarefa","prazo":"AAAA-MM-DD ou vazio se não houver data"}<<FIM_ACAO>>
+2. Agendar um compromisso: se o pedido for para marcar/agendar algo em uma data, inclua: <<ACAO>>{"acao":"criar_compromisso","titulo":"texto curto","data":"AAAA-MM-DD","hora":"HH:MM ou vazio","local":"opcional"}<<FIM_ACAO>>
+Hoje é ${fmtDataHoje()}. Use essa data como referência para calcular datas relativas ("amanhã", "sexta-feira", etc.). Inclua o bloco <<ACAO>> apenas quando o pedido for claramente para criar/agendar algo, e escreva uma frase curta de confirmação junto. Se não for um pedido de ação, responda normalmente, sem nenhum bloco <<ACAO>>.`;
     try{
       const {texto,fontes} = await chamarIA(systemPrompt, perguntaIA.trim(), comBuscaIA);
-      setRespostaIA(texto);
+      const m = texto.match(/<<ACAO>>([\s\S]*?)<<FIM_ACAO>>/);
+      let textoLimpo = texto;
+      if(m){
+        textoLimpo = texto.replace(/<<ACAO>>[\s\S]*?<<FIM_ACAO>>/,"").trim();
+        try{
+          const acao = JSON.parse(m[1]);
+          const confirmacao = executarAcaoIA(acao);
+          if(confirmacao) setAcaoExecutada(confirmacao);
+        }catch(e){ /* se o JSON vier malformado, apenas mostra o texto normalmente */ }
+      }
+      setRespostaIA(textoLimpo || "Feito!");
       setFontesIA(fontes||[]);
     }catch(e){
       setRespostaIA("Não foi possível obter uma resposta agora. Tente novamente em instantes.");
@@ -657,6 +687,11 @@ function PaginaDashboard({processos,sindicancias,peps,clientes,tarefas,parcelas,
           <input type="checkbox" checked={comBuscaIA} onChange={e=>setComBuscaIA(e.target.checked)}/>
           Fundamentar com pesquisa na web (Jusbrasil, legislação, jurisprudência)
         </label>
+        {acaoExecutada && (
+          <div style={{marginTop:16,background:"rgba(62,150,90,0.25)",border:"1px solid rgba(62,150,90,0.5)",borderRadius:8,padding:"12px 16px",color:"#fff",fontSize:14,display:"flex",alignItems:"center",gap:8}}>
+            <Icon name="check" size={15} color="#8FE0A8"/> {acaoExecutada}
+          </div>
+        )}
         {respostaIA && (
           <div style={{marginTop:16,background:"rgba(255,255,255,0.08)",borderRadius:8,padding:"14px 16px",color:"#fff",fontSize:14.5,lineHeight:1.6,whiteSpace:"pre-wrap"}}>
             {respostaIA}
@@ -2315,7 +2350,7 @@ function AppPrincipal({usuario, onSair}){
     <div style={{display:"flex",minHeight:"100vh"}}>
       <Sidebar paginaAtual={pagina} onIrPara={(p)=>{setPagina(p);setAbrirProcessoId(null);}} usuario={usuario} onSair={onSair} contadores={contadores}/>
       <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
-        {pagina==="dashboard" && <PaginaDashboard processos={processos} sindicancias={sindicancias} peps={peps} clientes={clientes} tarefas={tarefas} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
+        {pagina==="dashboard" && <PaginaDashboard processos={processos} sindicancias={sindicancias} peps={peps} clientes={clientes} tarefas={tarefas} setTarefas={setTarefas} agenda={agenda} setAgenda={setAgenda} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey}/>}
         {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
         {pagina==="peps" && <PaginaProcessos processos={peps} setProcessos={setPeps} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_PEP}/>}
