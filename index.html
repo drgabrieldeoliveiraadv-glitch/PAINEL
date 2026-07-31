@@ -243,6 +243,73 @@ async function buscarIntimacoesDJEN({oabNumero, oabUf, dias=15}){
   }));
 }
 
+function limparNumeroProcesso(numero){ return (numero||"").replace(/\D/g,""); }
+
+// Busca publicações da OAB no DJEN e usa para: (1) atualizar andamentos de processos já
+// cadastrados, (2) cadastrar automaticamente processos que apareceram numa publicação mas
+// ainda não existem no sistema, e (3) buscar movimentações oficiais no DataJud para os
+// processos tocados nesta sincronização.
+async function sincronizarProcessosPorOab({oabNumero, oabUf, processos, intimacoes, datajudApiKey}){
+  const publicacoes = await buscarIntimacoesDJEN({oabNumero, oabUf, dias:30});
+
+  let processosLocais = [...processos];
+  let intimacoesLocais = [...intimacoes];
+  const idsTocados = new Set();
+  let criados = 0, atualizados = 0;
+
+  for(const pub of publicacoes){
+    const numeroLimpo = limparNumeroProcesso(pub.numeroProcesso);
+    if(!numeroLimpo) continue;
+
+    let idx = processosLocais.findIndex(p=>limparNumeroProcesso(p.numero)===numeroLimpo);
+    const descAndamento = `Publicação DJEN: ${(pub.texto||"").slice(0,300)}`;
+
+    if(idx===-1){
+      const novo = {
+        id:uid(), numero:pub.numeroProcesso, clienteId:"", sistema:"PJe", classificacao:"",
+        vara: pub.orgao||"", autor:"", reu:"", assunto:"", valorCausa:"", prazo:"", prazoAto:"",
+        obs:"Processo cadastrado automaticamente a partir de uma publicação/intimação da sua OAB. Confira e complete os dados (cliente, vara, partes).",
+        arquivado:false, andamentos:[{data:pub.data||fmtDataHoje(), desc:descAndamento}]
+      };
+      processosLocais = [...processosLocais, novo];
+      idx = processosLocais.length-1;
+      criados++;
+    }else{
+      const jaTem = (processosLocais[idx].andamentos||[]).some(a=>a.data===pub.data && a.desc===descAndamento);
+      if(!jaTem){
+        processosLocais = processosLocais.map((p,i)=> i===idx ? {...p, andamentos:[...(p.andamentos||[]), {data:pub.data||fmtDataHoje(), desc:descAndamento}]} : p);
+        atualizados++;
+      }
+    }
+
+    idsTocados.add(processosLocais[idx].id);
+
+    const jaEstaNasIntimacoes = intimacoesLocais.some(i=>i.id===pub.id);
+    if(jaEstaNasIntimacoes){
+      intimacoesLocais = intimacoesLocais.map(i=> i.id===pub.id ? {...i, vinculada:true, processoId:processosLocais[idx].id} : i);
+    }else{
+      intimacoesLocais = [{...pub, vinculada:true, processoId:processosLocais[idx].id}, ...intimacoesLocais];
+    }
+  }
+
+  if(datajudApiKey){
+    for(const id of idsTocados){
+      const p = processosLocais.find(x=>x.id===id);
+      if(!p || !p.numero) continue;
+      try{
+        const movimentos = await buscarAndamentosDataJud(p.numero, datajudApiKey);
+        const jaExistem = new Set((p.andamentos||[]).map(a=>`${a.data}|${a.desc}`));
+        const novos = movimentos.filter(a=>!jaExistem.has(`${a.data}|${a.desc}`));
+        if(novos.length>0){
+          processosLocais = processosLocais.map(x=> x.id===id ? {...x, andamentos:[...(x.andamentos||[]), ...novos]} : x);
+        }
+      }catch(e){ /* segue para o próximo processo mesmo se um falhar */ }
+    }
+  }
+
+  return {processosLocais, intimacoesLocais, resumo:{criados, atualizados, totalPublicacoes:publicacoes.length}};
+}
+
 // ---------- Integração: Google Agenda ----------
 function inicializarGoogle(clientId, onToken){
   if(!clientId || !window.google?.accounts?.oauth2) return null;
@@ -1173,14 +1240,30 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
 }
 
 // ---------- Página: Processos ----------
-function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProcessoId,onProcessoAberto,datajudApiKey,labels=LABELS_PROCESSO}){
+function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProcessoId,onProcessoAberto,datajudApiKey,intimacoes,setIntimacoes,oabNumero,oabUf,labels=LABELS_PROCESSO}){
   const [busca,setBusca] = useState("");
   const [filtroStatus,setFiltroStatus] = useState("ativos");
   const [novo,setNovo] = useState(false);
   const [editando,setEditando] = useState(null);
   const [detalheId,setDetalheId] = useState(abrirProcessoId||null);
+  const [buscandoOab,setBuscandoOab] = useState(false);
+  const [resultadoOab,setResultadoOab] = useState(null);
+  const [erroOab,setErroOab] = useState("");
 
   useEffect(()=>{ if(abrirProcessoId){ setDetalheId(abrirProcessoId); onProcessoAberto&&onProcessoAberto(); } },[abrirProcessoId]);
+
+  const buscarPorOab = async () => {
+    setErroOab(""); setResultadoOab(null); setBuscandoOab(true);
+    try{
+      const {processosLocais, intimacoesLocais, resumo} = await sincronizarProcessosPorOab({oabNumero, oabUf, processos, intimacoes, datajudApiKey});
+      setProcessos(processosLocais);
+      setIntimacoes(intimacoesLocais);
+      setResultadoOab(resumo);
+    }catch(e){
+      setErroOab(e.message || "Erro ao buscar publicações pela OAB.");
+    }
+    setBuscandoOab(false);
+  };
 
   const clientePorId = (id) => clientes.find(c=>c.id===id);
 
@@ -1218,10 +1301,27 @@ function PaginaProcessos({processos,setProcessos,clientes,setClientes,abrirProce
           <h2 style={{fontSize:30}}>{labels.tituloPagina}</h2>
           <div style={{color:"var(--text2)",fontSize:14.5}}>{filtrados.length} {labels.contagem} {filtroStatus==="ativos"?"ativo(s)":filtroStatus==="arquivados"?"arquivado(s)":""}</div>
         </div>
-        <button onClick={()=>setNovo(true)} style={{...btnPrimario,display:"flex",alignItems:"center",gap:7}}>
-          <Icon name="mais" size={15} color="#fff"/> {labels.novo}
-        </button>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          {labels.mostrarDataJud && (
+            <button onClick={buscarPorOab} disabled={buscandoOab} style={{...btnSecundario,display:"flex",alignItems:"center",gap:7}}>
+              <Icon name="sync" size={14}/> {buscandoOab?"Buscando…":"Buscar por OAB"}
+            </button>
+          )}
+          <button onClick={()=>setNovo(true)} style={{...btnPrimario,display:"flex",alignItems:"center",gap:7}}>
+            <Icon name="mais" size={15} color="#fff"/> {labels.novo}
+          </button>
+        </div>
       </div>
+
+      {erroOab && <div style={{color:"var(--red)",fontSize:13.5,marginBottom:14}}>{erroOab}</div>}
+      {resultadoOab && (
+        <div style={{background:"var(--bg2)",borderRadius:9,padding:"11px 16px",fontSize:13.5,marginBottom:18}}>
+          {resultadoOab.totalPublicacoes===0
+            ? "Nenhuma publicação encontrada para sua OAB nos últimos 30 dias."
+            : `${resultadoOab.totalPublicacoes} publicação(ões) encontrada(s): ${resultadoOab.criados} processo(s) novo(s) cadastrado(s) automaticamente, ${resultadoOab.atualizados} processo(s) existente(s) atualizado(s).`}
+          {resultadoOab.criados>0 && " Confira os processos novos e complete os dados de cliente/vara/partes."}
+        </div>
+      )}
 
       <div style={{display:"flex",gap:12,marginBottom:18,flexWrap:"wrap",alignItems:"center"}}>
         <div style={{position:"relative",flex:1,minWidth:220,maxWidth:360}}>
@@ -2416,7 +2516,7 @@ function AppPrincipal({usuario, onSair}){
       <Sidebar paginaAtual={pagina} onIrPara={(p)=>{setPagina(p);setAbrirProcessoId(null);}} usuario={usuario} onSair={onSair} contadores={contadores}/>
       <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
         {pagina==="dashboard" && <PaginaDashboard processos={processos} setProcessos={setProcessos} sindicancias={sindicancias} setSindicancias={setSindicancias} peps={peps} setPeps={setPeps} clientes={clientes} setClientes={setClientes} tarefas={tarefas} setTarefas={setTarefas} agenda={agenda} setAgenda={setAgenda} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
-        {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey}/>}
+        {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey} intimacoes={intimacoes} setIntimacoes={setIntimacoes} oabNumero={config.oabNumero} oabUf={config.oabUf}/>}
         {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
         {pagina==="peps" && <PaginaProcessos processos={peps} setProcessos={setPeps} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_PEP}/>}
         {pagina==="clientes" && <PaginaClientes clientes={clientes} setClientes={setClientes} processos={processos} onAbrirProcesso={irParaProcesso}/>}
