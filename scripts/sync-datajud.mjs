@@ -181,4 +181,134 @@ async function sincronizarProcessosPorOab() {
 
     idsTocados.add(processosLocais[idx].id);
 
-    const jaEstaNasIntimacoes =
+    const jaEstaNasIntimacoes = intimacoesLocais.some(i => i.id === pub.id);
+    if (jaEstaNasIntimacoes) {
+      intimacoesLocais = intimacoesLocais.map(i => i.id === pub.id ? { ...i, vinculada: true, processoId: processosLocais[idx].id } : i);
+    } else {
+      intimacoesLocais = [{ ...pub, vinculada: true, processoId: processosLocais[idx].id }, ...intimacoesLocais];
+    }
+  }
+
+  if (DATAJUD_API_KEY) {
+    for (const id of idsTocados) {
+      const p = processosLocais.find(x => x.id === id);
+      if (!p || !p.numero) continue;
+      try {
+        const movimentos = await buscarAndamentosDataJud(p.numero);
+        const jaExistem = new Set((p.andamentos || []).map(a => `${a.data}|${a.desc}`));
+        const novos = movimentos.filter(a => !jaExistem.has(`${a.data}|${a.desc}`));
+        if (novos.length > 0) {
+          processosLocais = processosLocais.map(x => x.id === id ? { ...x, andamentos: [...(x.andamentos || []), ...novos] } : x);
+        }
+      } catch (e) { /* segue para o próximo processo mesmo se um falhar */ }
+    }
+  }
+
+  await sbUpsert("processos", processosLocais);
+  await sbUpsert("intimacoes", intimacoesLocais);
+  console.log(`[OAB] Sincronização concluída: ${criados} processo(s) novo(s), ${atualizados} atualizado(s).`);
+}
+
+async function obterAccessTokenGoogle() {
+  const resp = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: GOOGLE_CLIENT_ID,
+      client_secret: GOOGLE_CLIENT_SECRET,
+      refresh_token: GOOGLE_REFRESH_TOKEN,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!resp.ok) throw new Error(`Falha ao renovar token do Google: ${resp.status} ${await resp.text()}`);
+  const data = await resp.json();
+  return data.access_token;
+}
+
+async function criarEventoGoogle(accessToken, evento) {
+  const resp = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(evento)
+  });
+  if (!resp.ok) throw new Error(`Falha ao criar evento: ${resp.status} ${await resp.text()}`);
+  return resp.json();
+}
+
+async function sincronizarGoogleAgenda() {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !GOOGLE_REFRESH_TOKEN) {
+    console.log("[Google Agenda] Credenciais não configuradas — pulando.");
+    return;
+  }
+
+  let accessToken;
+  try {
+    accessToken = await obterAccessTokenGoogle();
+  } catch (e) {
+    console.error("[Google Agenda] Erro ao autenticar:", e.message);
+    return;
+  }
+
+  const agenda = (await sbGet("agenda")) || [];
+  let mudouAgenda = false;
+  for (const compromisso of agenda) {
+    if (compromisso.googleEventId) continue;
+    try {
+      const inicio = `${compromisso.data}T${compromisso.hora || "09:00"}:00`;
+      const evento = await criarEventoGoogle(accessToken, {
+        summary: compromisso.titulo,
+        location: compromisso.local || "",
+        description: compromisso.obs || "",
+        start: { dateTime: inicio, timeZone: "America/Sao_Paulo" },
+        end: { dateTime: inicio, timeZone: "America/Sao_Paulo" }
+      });
+      compromisso.googleEventId = evento.id;
+      mudouAgenda = true;
+      console.log(`[Google Agenda] Compromisso "${compromisso.titulo}" sincronizado.`);
+    } catch (e) {
+      console.error(`[Google Agenda] Erro ao sincronizar compromisso "${compromisso.titulo}":`, e.message);
+    }
+  }
+  if (mudouAgenda) await sbUpsert("agenda", agenda);
+
+  const categorias = [["processos", "Processo"], ["sindicancias", "Sindicância"], ["peps", "PEP"]];
+  for (const [chave, rotulo] of categorias) {
+    const lista = (await sbGet(chave)) || [];
+    let mudou = false;
+    for (const item of lista) {
+      if (item.arquivado || !item.prazo || item.googleEventIdPrazo) continue;
+      try {
+        const evento = await criarEventoGoogle(accessToken, {
+          summary: `Prazo (${rotulo}): ${item.prazoAto || "sem descrição"} — ${item.numero || "sem número"}`,
+          description: "Cadastrado automaticamente pelo sistema de gestão.",
+          start: { date: item.prazo },
+          end: { date: item.prazo }
+        });
+        item.googleEventIdPrazo = evento.id;
+        mudou = true;
+        console.log(`[Google Agenda] Prazo de ${rotulo.toLowerCase()} "${item.numero || ""}" sincronizado.`);
+      } catch (e) {
+        console.error(`[Google Agenda] Erro ao sincronizar prazo (${chave}):`, e.message);
+      }
+    }
+    if (mudou) await sbUpsert(chave, lista);
+  }
+}
+
+async function main() {
+  if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !USER_ID) {
+    console.error("Faltam variáveis de ambiente obrigatórias (verifique os Secrets no GitHub).");
+    process.exit(1);
+  }
+
+  if (DATAJUD_API_KEY) {
+    await sincronizarProcessos();
+  } else {
+    console.log("[DataJud] Chave não configurada — pulando sincronização de andamentos.");
+  }
+
+  await sincronizarProcessosPorOab();
+  await sincronizarGoogleAgenda();
+}
+
+main().catch(e => { console.error(e); process.exit(1); });
