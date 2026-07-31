@@ -53,7 +53,19 @@
   @keyframes fadeIn{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:translateY(0);}}
   @media (max-width:780px){
     .hide-mobile{display:none !important;}
+    .grid-2col{grid-template-columns:1fr !important;}
+    .conteudo-principal{padding:70px 14px 24px !important;}
+    .sidebar-wrap{
+      position:fixed !important; top:0; left:0; height:100vh; z-index:150;
+      transform:translateX(-100%); transition:transform .25s ease;
+      box-shadow:0 0 30px rgba(0,0,0,0.35);
+    }
+    .sidebar-wrap.aberta{transform:translateX(0);}
+    .botao-menu-mobile{display:flex !important;}
+    .overlay-menu-mobile{display:block !important;}
   }
+  .botao-menu-mobile{display:none;}
+  .overlay-menu-mobile{display:none;}
 </style>
 </head>
 <body>
@@ -521,12 +533,16 @@ const MENU = [
 
 function Sidebar({paginaAtual,onIrPara,usuario,onSair,contadores}){
   const [aberto,setAberto] = useState(false);
+
+  const irPara = (id) => { onIrPara(id); setAberto(false); };
+
   return (
     <>
-      <button onClick={()=>setAberto(true)} className="hide-desktop" style={{position:"fixed",top:14,left:14,zIndex:40,background:"var(--navy)",color:"#fff",border:"none",borderRadius:8,padding:9,display:"none"}}>
-        <Icon name="tarefas" color="#fff"/>
+      <button onClick={()=>setAberto(true)} className="botao-menu-mobile" style={{position:"fixed",top:14,left:14,zIndex:160,background:"var(--navy)",color:"#fff",border:"none",borderRadius:8,padding:9,alignItems:"center",justifyContent:"center"}}>
+        <Icon name="tarefas" size={18} color="#fff"/>
       </button>
-      <div style={{
+      {aberto && <div onClick={()=>setAberto(false)} className="overlay-menu-mobile" style={{position:"fixed",inset:0,background:"rgba(11,29,58,0.5)",zIndex:140}}/>}
+      <div className={`sidebar-wrap${aberto?" aberta":""}`} style={{
           width:238, minWidth:238, background:"var(--navy)", color:"#fff",
           display:"flex", flexDirection:"column", height:"100vh", position:"sticky", top:0,
         }}>
@@ -538,7 +554,7 @@ function Sidebar({paginaAtual,onIrPara,usuario,onSair,contadores}){
         </div>
         <div style={{flex:1,overflowY:"auto",padding:"14px 10px"}}>
           {MENU.map(m=>(
-            <div key={m.id} onClick={()=>onIrPara(m.id)}
+            <div key={m.id} onClick={()=>irPara(m.id)}
               style={{
                 display:"flex",alignItems:"center",gap:11,padding:"11px 14px",borderRadius:8,cursor:"pointer",
                 marginBottom:3, fontSize:14.5,
@@ -844,7 +860,7 @@ Hoje é ${fmtDataHoje()}. Use essa data como referência para calcular datas rel
         </div>
       </div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1.3fr 1fr",gap:18}}>
+      <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1.3fr 1fr",gap:18}}>
         <div style={{background:"var(--card)",borderRadius:12,padding:"20px 22px",boxShadow:"var(--shadow)",border:"1px solid var(--border)"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
             <h3 style={{fontSize:19}}>Prazos mais próximos</h3>
@@ -896,7 +912,7 @@ function ModalFormCliente({cliente,onSave,onClose}){
       <form onSubmit={salvar}>
         <label style={labelStyle}>Nome completo *</label>
         <input required style={campoStyle} value={f.nome} onChange={e=>s("nome",e.target.value)}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>CPF/CNPJ</label>
             <input style={campoStyle} value={f.cpfCnpj} onChange={e=>s("cpfCnpj",fmtCPF(e.target.value))}/>
@@ -910,7 +926,7 @@ function ModalFormCliente({cliente,onSave,onClose}){
         <input type="email" style={campoStyle} value={f.email} onChange={e=>s("email",e.target.value)}/>
         <label style={labelStyle}>Endereço</label>
         <input style={campoStyle} value={f.endereco} onChange={e=>s("endereco",e.target.value)}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Profissão</label>
             <input style={campoStyle} value={f.profissao} onChange={e=>s("profissao",e.target.value)}/>
@@ -1059,7 +1075,7 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente,label
   return (
     <Modal titulo={processo?labels.editar:labels.novo} onClose={onClose} largura={620}>
       <form onSubmit={salvar}>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>{labels.numero}</label>
             <input style={campoStyle} value={f.numero} onChange={e=>s("numero",e.target.value)} placeholder={labels.numeroPlaceholder}/>
@@ -1079,7 +1095,7 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente,label
           {clientesFiltrados.map(c=><option key={c.id} value={c.id}>{c.nome}</option>)}
         </select>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Autor</label>
             <input style={campoStyle} value={f.autor} onChange={e=>s("autor",e.target.value)}/>
@@ -1096,7 +1112,7 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente,label
           {CLASSIFICACOES_PADRAO.map(c=><option key={c}>{c}</option>)}
         </select>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Vara/Comarca</label>
             <input style={campoStyle} value={f.vara} onChange={e=>s("vara",e.target.value)} placeholder="Ex: 2ª Vara Cível de Itaboraí"/>
@@ -1110,7 +1126,7 @@ function ModalFormProcesso({processo,clientes,onSave,onClose,onNovoCliente,label
         <label style={labelStyle}>Assunto</label>
         <input style={campoStyle} value={f.assunto} onChange={e=>s("assunto",e.target.value)}/>
 
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Prazo (data)</label>
             <input type="date" style={campoStyle} value={f.prazo} onChange={e=>s("prazo",e.target.value)}/>
@@ -1171,7 +1187,7 @@ function ModalDetalheProcesso({p,cliente,onClose,onEdit,onExcluir,onAddAndamento
         {p.prazo && <Badge texto={dias<0?`prazo vencido há ${Math.abs(dias)}d`:dias===0?"prazo hoje":`prazo em ${dias}d`} cor={corPrazo(dias)}/>}
       </div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:14.5,marginBottom:18}}>
+      <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,fontSize:14.5,marginBottom:18}}>
         <div><span style={{color:"var(--text3)"}}>{labels.clienteLabel.split(" neste")[0].split(" nesta")[0]}: </span><b>{cliente?.nome||"—"}</b></div>
         <div><span style={{color:"var(--text3)"}}>Vara: </span>{p.vara||"—"}</div>
         <div><span style={{color:"var(--text3)"}}>Autor: </span>{p.autor||"—"}</div>
@@ -1405,7 +1421,7 @@ function ModalFormTarefa({tarefa,processos,clientes,onSave,onClose}){
           <option value="">Nenhum</option>
           {processos.map(p=><option key={p.id} value={p.id}>{p.numero||"Processo sem número"}</option>)}
         </select>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Prazo</label>
             <input type="date" style={campoStyle} value={f.prazo} onChange={e=>s("prazo",e.target.value)}/>
@@ -1518,7 +1534,7 @@ function ModalFormCompromisso({compromisso,processos,clientes,onSave,onClose}){
       <form onSubmit={salvar}>
         <label style={labelStyle}>Título *</label>
         <input required style={campoStyle} value={f.titulo} onChange={e=>s("titulo",e.target.value)}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Data *</label>
             <input required type="date" style={campoStyle} value={f.data} onChange={e=>s("data",e.target.value)}/>
@@ -1740,7 +1756,7 @@ function ModalFormParcela({parcela,processos,clientes,onSave,onClose}){
           <option value="">Nenhum</option>
           {processos.map(p=><option key={p.id} value={p.id}>{p.numero||"Processo sem número"}</option>)}
         </select>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Valor (R$) *</label>
             <input required type="number" step="0.01" style={campoStyle} value={f.valor} onChange={e=>s("valor",e.target.value)}/>
@@ -1775,7 +1791,7 @@ function ModalFormDespesa({despesa,onSave,onClose}){
       <form onSubmit={salvar}>
         <label style={labelStyle}>Descrição *</label>
         <input required style={campoStyle} value={f.descricao} onChange={e=>s("descricao",e.target.value)}/>
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={labelStyle}>Valor (R$) *</label>
             <input required type="number" step="0.01" style={campoStyle} value={f.valor} onChange={e=>s("valor",e.target.value)}/>
@@ -2281,7 +2297,7 @@ ${instrucoes || "nenhuma"}`;
       <h2 style={{fontSize:30,marginBottom:4}}>Gerador de Peças</h2>
       <div style={{color:"var(--text2)",marginBottom:22,fontSize:14.5}}>Rascunhos assistidos por IA — sempre revise antes de protocolar</div>
 
-      <div style={{display:"grid",gridTemplateColumns:"380px 1fr",gap:22,alignItems:"flex-start"}}>
+      <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"380px 1fr",gap:22,alignItems:"flex-start"}}>
         <div style={{background:"var(--card)",borderRadius:12,padding:"20px 22px",boxShadow:"var(--shadow)",border:"1px solid var(--border)"}}>
           <label style={labelStyle}>Tipo de peça</label>
           <select style={campoStyle} value={tipo} onChange={e=>setTipo(e.target.value)}>
@@ -2355,7 +2371,7 @@ function PaginaConfig({usuario,config,setConfig,googleToken,onConectarGoogle}){
       <h2 style={{fontSize:30,marginBottom:4}}>Configurações</h2>
       <div style={{color:"var(--text2)",marginBottom:22,fontSize:14.5}}>Dados do escritório, do sistema e integrações</div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+      <div className="grid-2col" style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
         <div style={{background:"var(--card)",borderRadius:12,padding:"22px 24px",boxShadow:"var(--shadow)",border:"1px solid var(--border)"}}>
           <h3 style={{fontSize:19,marginBottom:14}}>Identidade do escritório</h3>
           <div style={{display:"flex",justifyContent:"center",marginBottom:16,background:"var(--bg2)",borderRadius:10,padding:16}}>
@@ -2514,7 +2530,7 @@ function AppPrincipal({usuario, onSair}){
   return (
     <div style={{display:"flex",minHeight:"100vh"}}>
       <Sidebar paginaAtual={pagina} onIrPara={(p)=>{setPagina(p);setAbrirProcessoId(null);}} usuario={usuario} onSair={onSair} contadores={contadores}/>
-      <div style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
+      <div className="conteudo-principal" style={{flex:1,padding:"28px 34px",maxWidth:"100%",overflowX:"hidden"}}>
         {pagina==="dashboard" && <PaginaDashboard processos={processos} setProcessos={setProcessos} sindicancias={sindicancias} setSindicancias={setSindicancias} peps={peps} setPeps={setPeps} clientes={clientes} setClientes={setClientes} tarefas={tarefas} setTarefas={setTarefas} agenda={agenda} setAgenda={setAgenda} parcelas={parcelas} onIrPara={setPagina} onAbrirProcesso={irParaProcesso}/>}
         {pagina==="processos" && <PaginaProcessos processos={processos} setProcessos={setProcessos} clientes={clientes} setClientes={setClientes} abrirProcessoId={abrirProcessoId} onProcessoAberto={()=>setAbrirProcessoId(null)} datajudApiKey={config.datajudApiKey} intimacoes={intimacoes} setIntimacoes={setIntimacoes} oabNumero={config.oabNumero} oabUf={config.oabUf}/>}
         {pagina==="sindicancias" && <PaginaProcessos processos={sindicancias} setProcessos={setSindicancias} clientes={clientes} setClientes={setClientes} datajudApiKey={config.datajudApiKey} labels={LABELS_SINDICANCIA}/>}
