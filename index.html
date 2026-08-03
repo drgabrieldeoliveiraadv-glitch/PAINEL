@@ -235,6 +235,20 @@ async function buscarAndamentosDataJud(numeroProcesso, apiKey){
 }
 
 // ---------- Integração: DJEN — Diário de Justiça Eletrônico Nacional (busca pública por OAB) ----------
+// Camada de proteção própria: só aceita uma publicação se o texto dela mencionar
+// explicitamente o número + UF da OAB configurada — mesmo que a API do governo já
+// tenha filtrado por OAB, conferimos de novo no texto antes de aceitar qualquer item.
+function textoContemOab(texto, oabNumero, oabUf){
+  if(!texto || !oabNumero || !oabUf) return false;
+  const numeroLimpo = (oabNumero||"").replace(/\D/g,"");
+  if(!numeroLimpo) return false;
+  const numPattern = numeroLimpo.split("").join("\\.?"); // tolera pontos entre dígitos (ex: 273.728)
+  const uf = oabUf.toUpperCase();
+  const regexNumUf = new RegExp(`${numPattern}\\s*[\\/\\-\\.]?\\s*${uf}`, "i");
+  const regexUfNum = new RegExp(`${uf}\\s*[\\/\\-\\.]?\\s*${numPattern}`, "i");
+  return regexNumUf.test(texto) || regexUfNum.test(texto);
+}
+
 async function buscarIntimacoesDJEN({oabNumero, oabUf, dias=15}){
   if(!oabNumero || !oabUf) throw new Error("Informe seu número e UF da OAB em Configurações.");
   const hoje = new Date();
@@ -245,14 +259,18 @@ async function buscarIntimacoesDJEN({oabNumero, oabUf, dias=15}){
   if(!resp.ok) throw new Error(`DJEN retornou erro ${resp.status}.`);
   const data = await resp.json();
   const itens = data?.items || data?.content || [];
-  return itens.map(it=>({
-    id: it.id || uid(),
-    data: (it.data_disponibilizacao || it.dataDisponibilizacao || "").slice(0,10),
-    orgao: it.orgao?.nome || it.nomeOrgao || "—",
-    numeroProcesso: it.numero_processo || it.numeroProcesso || "",
-    texto: it.texto || it.conteudo || "",
-    vinculada:false
-  }));
+  return itens
+    .map(it=>({
+      id: it.id || uid(),
+      data: (it.data_disponibilizacao || it.dataDisponibilizacao || "").slice(0,10),
+      orgao: it.orgao?.nome || it.nomeOrgao || "—",
+      numeroProcesso: it.numero_processo || it.numeroProcesso || "",
+      texto: it.texto || it.conteudo || "",
+      vinculada:false,
+      revisada:false,
+      analiseIA:null,
+    }))
+    .filter(it => textoContemOab(it.texto, oabNumero, oabUf));
 }
 
 function limparNumeroProcesso(numero){ return (numero||"").replace(/\D/g,""); }
@@ -1656,6 +1674,100 @@ function PaginaAgenda({agenda,setAgenda,processos,clientes,googleToken}){
 }
 
 // ---------- Página: Intimações (DJEN) ----------
+// ---------- Cartão de uma publicação pendente, com análise por IA ----------
+function CardIntimacao({it, processos, vinculandoId, setVinculandoId, onVincular, onConfirmarPrazo, onAtualizar}){
+  const [analisando,setAnalisando] = useState(false);
+  const [erroAnalise,setErroAnalise] = useState("");
+  const [dataEditada,setDataEditada] = useState(it.analiseIA?.prazoSugerido || "");
+  const [atoEditado,setAtoEditado] = useState(it.analiseIA?.atoSugerido || "");
+
+  const analisar = async () => {
+    setErroAnalise(""); setAnalisando(true);
+    try{
+      const resultado = await analisarPublicacaoComIA(it.texto || "");
+      onAtualizar(it.id, {analiseIA: resultado});
+      setDataEditada(resultado.prazoSugerido || "");
+      setAtoEditado(resultado.atoSugerido || "");
+    }catch(e){
+      setErroAnalise("Não foi possível analisar agora. Tente novamente.");
+    }
+    setAnalisando(false);
+  };
+
+  return (
+    <div style={{padding:"14px 20px",borderBottom:"1px solid var(--border)"}}>
+      <div style={{display:"flex",justifyContent:"space-between",gap:12}}>
+        <div style={{fontWeight:600,fontSize:14.5}}>{it.orgao}</div>
+        <div style={{fontSize:12.5,color:"var(--text3)"}}>{fmtData(it.data)}</div>
+      </div>
+      {it.numeroProcesso && <div style={{fontSize:12.5,color:"var(--text3)",marginBottom:4}}>{it.numeroProcesso}</div>}
+      <div style={{fontSize:14,color:"var(--text2)",marginBottom:8}}>{(it.texto||"").slice(0,240)}{(it.texto||"").length>240?"…":""}</div>
+
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:10}}>
+        {it.vinculada ? (
+          <Badge texto="vinculada ao processo" cor="var(--green)"/>
+        ) : (
+          <button onClick={()=>setVinculandoId(it.id)} style={{...btnSecundario,fontSize:12,padding:"6px 11px"}}>Vincular a um processo</button>
+        )}
+        <button onClick={analisar} disabled={analisando} style={{...btnPrimario,fontSize:12,padding:"6px 11px",display:"flex",alignItems:"center",gap:5}}>
+          <Icon name="ia" size={12} color="#fff"/> {analisando?"Analisando…":it.analiseIA?"Analisar de novo":"Analisar com IA"}
+        </button>
+      </div>
+
+      {vinculandoId===it.id && (
+        <div style={{marginBottom:10,display:"flex",gap:8}}>
+          <select style={{...campoStyle,margin:0,flex:1}} onChange={e=>onVincular(it.id, e.target.value)} defaultValue="">
+            <option value="" disabled>Selecione o processo...</option>
+            {processos.map(p=><option key={p.id} value={p.id}>{p.numero||"Processo sem número"}</option>)}
+          </select>
+          <button onClick={()=>setVinculandoId(null)} style={btnSecundario}>Cancelar</button>
+        </div>
+      )}
+
+      {erroAnalise && <div style={{color:"var(--red)",fontSize:12.5,marginBottom:8}}>{erroAnalise}</div>}
+
+      {it.analiseIA && (
+        <div style={{background:"var(--bg2)",borderRadius:8,padding:"12px 14px",marginTop:6}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:6}}>
+            <Icon name="ia" size={13} color="var(--gold-dark)"/>
+            <span style={{fontSize:12.5,fontWeight:700,color:"var(--text)"}}>
+              Sugestão da IA: {it.analiseIA.temPrazo ? "parece exigir prazo" : "não parece exigir prazo"}
+            </span>
+          </div>
+          <div style={{fontSize:13,color:"var(--text2)",marginBottom:it.analiseIA.temPrazo?10:0}}>{it.analiseIA.justificativa}</div>
+
+          {it.analiseIA.temPrazo && (
+            <>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}} className="grid-2col">
+                <div>
+                  <label style={{...labelStyle,fontSize:10.5}}>Data sugerida (confira!)</label>
+                  <input type="date" style={{...campoStyle,margin:"4px 0 0"}} value={dataEditada} onChange={e=>setDataEditada(e.target.value)}/>
+                </div>
+                <div>
+                  <label style={{...labelStyle,fontSize:10.5}}>Ato</label>
+                  <input style={{...campoStyle,margin:"4px 0 0"}} value={atoEditado} onChange={e=>setAtoEditado(e.target.value)}/>
+                </div>
+              </div>
+              {!it.processoId && (
+                <div style={{fontSize:12,color:"var(--red)",marginBottom:8}}>Esta publicação ainda não está vinculada a um processo — vincule acima antes de confirmar o prazo.</div>
+              )}
+              <button onClick={()=>onConfirmarPrazo(it, dataEditada, atoEditado)} disabled={!it.processoId || !dataEditada}
+                style={{...btnPrimario,fontSize:12.5,padding:"7px 14px",display:"flex",alignItems:"center",gap:6}}>
+                <Icon name="check" size={13} color="#fff"/> Confirmar e gravar prazo no processo
+              </button>
+            </>
+          )}
+          {!it.analiseIA.temPrazo && (
+            <button onClick={()=>onAtualizar(it.id,{revisada:true})} style={{...btnSecundario,fontSize:12.5,padding:"7px 14px",marginTop:4}}>
+              Marcar como revisada (sem prazo)
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PaginaIntimacoes({intimacoes,setIntimacoes,processos,setProcessos,oabNumero,oabUf,onAbrirProcesso}){
   const [buscando,setBuscando] = useState(false);
   const [erro,setErro] = useState("");
@@ -1669,7 +1781,7 @@ function PaginaIntimacoes({intimacoes,setIntimacoes,processos,setProcessos,oabNu
       const jaTemIds = new Set(intimacoes.map(i=>i.id));
       const novas = encontradas.filter(i=>!jaTemIds.has(i.id));
       setIntimacoes(prev=>[...novas,...prev]);
-      if(novas.length===0 && encontradas.length===0) setErro("Nenhuma publicação encontrada nos últimos 15 dias para esta OAB.");
+      if(novas.length===0 && encontradas.length===0) setErro("Nenhuma publicação encontrada nos últimos 15 dias que mencione explicitamente sua OAB.");
     }catch(e){ setErro(e.message||"Erro ao consultar o DJEN."); }
     setBuscando(false);
   };
@@ -1683,12 +1795,24 @@ function PaginaIntimacoes({intimacoes,setIntimacoes,processos,setProcessos,oabNu
     setVinculandoId(null);
   };
 
+  const atualizarIntimacao = (id, campos) => setIntimacoes(prev=>prev.map(i=>i.id===id?{...i,...campos}:i));
+
+  const confirmarPrazo = (intimacao, dataConfirmada, atoConfirmado) => {
+    if(intimacao.processoId){
+      setProcessos(ps=>ps.map(p=>p.id===intimacao.processoId?{...p,prazo:dataConfirmada,prazoAto:atoConfirmado}:p));
+    }
+    atualizarIntimacao(intimacao.id, {revisada:true});
+  };
+
+  const pendentes = intimacoes.filter(i=>!i.revisada);
+  const revisadas = intimacoes.filter(i=>i.revisada);
+
   return (
     <div className="fade-in">
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
         <div>
           <h2 style={{fontSize:30}}>Intimações</h2>
-          <div style={{color:"var(--text2)",fontSize:14.5}}>Publicações do Diário de Justiça Eletrônico Nacional (DJEN) para sua OAB</div>
+          <div style={{color:"var(--text2)",fontSize:14.5}}>Publicações do DJEN para sua OAB — {pendentes.length} pendente(s) de análise</div>
         </div>
         <button onClick={buscar} disabled={buscando} style={{...btnPrimario,display:"flex",alignItems:"center",gap:7}}>
           <Icon name="sync" size={15} color="#fff"/> {buscando?"Buscando…":"Buscar publicações"}
@@ -1702,33 +1826,33 @@ function PaginaIntimacoes({intimacoes,setIntimacoes,processos,setProcessos,oabNu
       )}
       {erro && <div style={{color:"var(--red)",fontSize:14,marginBottom:14}}>{erro}</div>}
 
-      <div style={{background:"var(--card)",borderRadius:12,boxShadow:"var(--shadow)",border:"1px solid var(--border)",overflow:"hidden"}}>
-        {intimacoes.length===0 && <div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>Nenhuma intimação carregada ainda.</div>}
-        {intimacoes.map((it,i)=>(
-          <div key={it.id} style={{padding:"14px 20px",borderBottom:i<intimacoes.length-1?"1px solid var(--border)":"none"}}>
-            <div style={{display:"flex",justifyContent:"space-between",gap:12}}>
-              <div style={{fontWeight:600,fontSize:14.5}}>{it.orgao}</div>
-              <div style={{fontSize:12.5,color:"var(--text3)"}}>{fmtData(it.data)}</div>
-            </div>
-            {it.numeroProcesso && <div style={{fontSize:12.5,color:"var(--text3)",marginBottom:4}}>{it.numeroProcesso}</div>}
-            <div style={{fontSize:14,color:"var(--text2)",marginBottom:8}}>{(it.texto||"").slice(0,240)}{(it.texto||"").length>240?"…":""}</div>
-            {it.vinculada ? (
-              <Badge texto="vinculada ao processo" cor="var(--green)"/>
-            ) : (
-              <button onClick={()=>setVinculandoId(it.id)} style={{...btnSecundario,fontSize:12,padding:"6px 11px"}}>Vincular a um processo</button>
-            )}
-            {vinculandoId===it.id && (
-              <div style={{marginTop:10,display:"flex",gap:8}}>
-                <select style={{...campoStyle,margin:0,flex:1}} onChange={e=>vincular(it.id, e.target.value)} defaultValue="">
-                  <option value="" disabled>Selecione o processo...</option>
-                  {processos.map(p=><option key={p.id} value={p.id}>{p.numero||"Processo sem número"}</option>)}
-                </select>
-                <button onClick={()=>setVinculandoId(null)} style={btnSecundario}>Cancelar</button>
-              </div>
-            )}
-          </div>
+      <div style={{background:"rgba(184,154,78,0.12)",border:"1px solid var(--gold-light)",borderRadius:9,padding:"12px 16px",marginBottom:20,fontSize:13}}>
+        <b>Como funciona a análise por IA:</b> a IA lê o texto de cada publicação e sugere se parece exigir um prazo, com uma data estimada — mas isso é <b>sempre uma sugestão</b>. Nada é gravado automaticamente; você confere e confirma (ou ajusta a data) antes de qualquer prazo entrar no processo. Além disso, toda publicação que chega aqui já passou por um filtro próprio que descarta qualquer uma cujo texto não mencione explicitamente sua OAB.
+      </div>
+
+      <div style={{fontSize:13,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,color:"var(--text2)",marginBottom:10}}>Pendentes de análise</div>
+      <div style={{background:"var(--card)",borderRadius:12,boxShadow:"var(--shadow)",border:"1px solid var(--border)",overflow:"hidden",marginBottom:26}}>
+        {pendentes.length===0 && <div style={{padding:30,textAlign:"center",color:"var(--text3)"}}>Nenhuma publicação pendente de análise.</div>}
+        {pendentes.map((it,i)=>(
+          <CardIntimacao key={it.id} it={it} idx={i} total={pendentes.length}
+            processos={processos} vinculandoId={vinculandoId} setVinculandoId={setVinculandoId}
+            onVincular={vincular} onConfirmarPrazo={confirmarPrazo} onAtualizar={atualizarIntimacao}/>
         ))}
       </div>
+
+      {revisadas.length>0 && (
+        <>
+          <div style={{fontSize:13,fontWeight:700,textTransform:"uppercase",letterSpacing:.4,color:"var(--text2)",marginBottom:10}}>Já revisadas</div>
+          <div style={{background:"var(--card)",borderRadius:12,boxShadow:"var(--shadow)",border:"1px solid var(--border)",overflow:"hidden",opacity:0.7}}>
+            {revisadas.slice(0,20).map((it,i)=>(
+              <div key={it.id} style={{padding:"12px 20px",borderBottom:i<Math.min(revisadas.length,20)-1?"1px solid var(--border)":"none",display:"flex",justifyContent:"space-between",gap:12}}>
+                <div style={{fontSize:13.5,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.orgao} — {(it.texto||"").slice(0,80)}...</div>
+                <Badge texto="revisada" cor="var(--text3)"/>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2098,6 +2222,26 @@ async function chamarIA(systemPrompt, userContent, comBusca=false){
     .map(c=>({titulo:c.web.title||c.web.uri, url:c.web.uri}));
   return {texto: texto || (data?.error?.message ? `Erro: ${data.error.message}` : "Não foi possível gerar o conteúdo. Tente novamente."), fontes};
 }
+
+// Usa a IA (Gemini, via o mesmo proxy) para sugerir se uma publicação parece ser uma
+// intimação com prazo, e qual seria a data — sempre como sugestão, nunca gravada sozinha.
+async function analisarPublicacaoComIA(textoPublicacao){
+  const systemPrompt = `Você é um assistente de apoio a um escritório de advocacia brasileiro. Vai receber o texto de uma publicação do Diário de Justiça Eletrônico. Sua tarefa é APENAS sugerir uma triagem inicial — a decisão final é sempre de um advogado humano, então nunca afirme certeza absoluta.
+
+Responda SOMENTE com um JSON puro, sem markdown, sem texto antes ou depois, exatamente neste formato:
+{"temPrazo": true ou false, "prazoSugerido": "AAAA-MM-DD" ou null, "atoSugerido": "texto curto (ex: Contestação, Recurso, Manifestação)" ou null, "justificativa": "1 a 2 frases explicando o raciocínio, em português"}
+
+Hoje é ${fmtDataHoje()}. Se o texto mencionar um prazo em dias (ex: "no prazo de 15 dias"), calcule a data a partir de hoje como referência, mas deixe claro na justificativa que é uma estimativa preliminar que precisa ser conferida pelo advogado (você não tem certeza sobre feriados, forma de contagem exata, ou a data real de disponibilização). Se o texto não parecer exigir nenhuma ação com prazo (ex: é só uma comunicação informativa, uma sentença já transitada, etc.), retorne temPrazo:false.`;
+
+  const {texto} = await chamarIA(systemPrompt, textoPublicacao, false);
+  const limpo = texto.replace(/```json|```/g,"").trim();
+  try{
+    return JSON.parse(limpo);
+  }catch(e){
+    return {temPrazo:false, prazoSugerido:null, atoSugerido:null, justificativa:"Não foi possível interpretar a resposta da IA — confira manualmente."};
+  }
+}
+
 
 // ---------- Página: Documentos ----------
 function CartaoDocumento({tipo, modelo, onUpload, clientes, processos, sindicancias, peps, config}){
@@ -2485,33 +2629,47 @@ function AppPrincipal({usuario, onSair}){
   const [statusSincDataJud, setStatusSincDataJud] = useState(null);
 
   useEffect(()=>{
-    if(!carregado || !config.datajudApiKey) return;
+    if(!carregado) return;
     (async () => {
       const hoje = fmtDataHoje();
       const ultimaSinc = await stGet("datajudUltimaSincronizacao", null);
       if(ultimaSinc === hoje) return;
 
-      const processosParaChecar = processos.filter(p=>!p.arquivado && p.numero);
-      if(processosParaChecar.length===0){ await stSet("datajudUltimaSincronizacao", hoje); return; }
-
       setStatusSincDataJud("sincronizando");
-      let totalNovos = 0;
-      for(const p of processosParaChecar){
-        try{
-          const encontrados = await buscarAndamentosDataJud(p.numero, config.datajudApiKey);
-          const jaExistem = new Set((p.andamentos||[]).map(a=>`${a.data}|${a.desc}`));
-          const novos = encontrados.filter(a=>!jaExistem.has(`${a.data}|${a.desc}`));
-          if(novos.length>0){
-            totalNovos += novos.length;
-            setProcessos(ps=>ps.map(x=>x.id===p.id?{...x,andamentos:[...(x.andamentos||[]),...novos]}:x));
-          }
-        }catch(e){ /* segue para o próximo processo mesmo se um falhar */ }
+      let totalNovosDataJud = 0;
+      let resultadoOab = null;
+
+      if(config.datajudApiKey){
+        const processosParaChecar = processos.filter(p=>!p.arquivado && p.numero);
+        for(const p of processosParaChecar){
+          try{
+            const encontrados = await buscarAndamentosDataJud(p.numero, config.datajudApiKey);
+            const jaExistem = new Set((p.andamentos||[]).map(a=>`${a.data}|${a.desc}`));
+            const novos = encontrados.filter(a=>!jaExistem.has(`${a.data}|${a.desc}`));
+            if(novos.length>0){
+              totalNovosDataJud += novos.length;
+              setProcessos(ps=>ps.map(x=>x.id===p.id?{...x,andamentos:[...(x.andamentos||[]),...novos]}:x));
+            }
+          }catch(e){ /* segue para o próximo processo mesmo se um falhar */ }
+        }
       }
+
+      if(config.oabNumero && config.oabUf){
+        try{
+          const {processosLocais, intimacoesLocais, resumo} = await sincronizarProcessosPorOab({
+            oabNumero: config.oabNumero, oabUf: config.oabUf, processos, intimacoes, datajudApiKey: config.datajudApiKey
+          });
+          setProcessos(processosLocais);
+          setIntimacoes(intimacoesLocais);
+          resultadoOab = resumo;
+        }catch(e){ /* segue mesmo se a busca por OAB falhar */ }
+      }
+
       await stSet("datajudUltimaSincronizacao", hoje);
-      setStatusSincDataJud({novos: totalNovos});
-      setTimeout(()=>setStatusSincDataJud(null), 7000);
+      setStatusSincDataJud({novosDataJud: totalNovosDataJud, oab: resultadoOab});
+      setTimeout(()=>setStatusSincDataJud(null), 8000);
     })();
-  },[carregado, config.datajudApiKey]);
+  },[carregado, config.datajudApiKey, config.oabNumero, config.oabUf]);
 
   const irParaProcesso = (id) => { setPagina("processos"); setAbrirProcessoId(id); };
 
@@ -2548,14 +2706,20 @@ function AppPrincipal({usuario, onSair}){
         <div style={{
           position:"fixed", bottom:20, right:20, zIndex:200,
           background:"var(--navy)", color:"#fff", borderRadius:10, padding:"12px 18px",
-          boxShadow:"var(--shadow-lg)", display:"flex", alignItems:"center", gap:10, fontSize:13.5, maxWidth:320
+          boxShadow:"var(--shadow-lg)", display:"flex", alignItems:"center", gap:10, fontSize:13.5, maxWidth:340
         }}>
           <Icon name="sync" size={16} color="var(--gold-light)"/>
           {statusSincDataJud==="sincronizando"
-            ? "Sincronizando processos com o DataJud…"
-            : statusSincDataJud.novos>0
-              ? `${statusSincDataJud.novos} andamento(s) novo(s) encontrado(s) no DataJud hoje.`
-              : "Processos verificados no DataJud — nenhuma novidade hoje."}
+            ? "Verificando processos (DataJud e OAB)…"
+            : (()=>{
+                const partes = [];
+                if(statusSincDataJud.novosDataJud>0) partes.push(`${statusSincDataJud.novosDataJud} andamento(s) novo(s) no DataJud`);
+                if(statusSincDataJud.oab){
+                  if(statusSincDataJud.oab.criados>0) partes.push(`${statusSincDataJud.oab.criados} processo(s) novo(s) via OAB`);
+                  if(statusSincDataJud.oab.atualizados>0) partes.push(`${statusSincDataJud.oab.atualizados} processo(s) atualizado(s) via OAB`);
+                }
+                return partes.length>0 ? `${partes.join(". ")}.` : "Verificação diária concluída — nenhuma novidade hoje.";
+              })()}
         </div>
       )}
     </div>
